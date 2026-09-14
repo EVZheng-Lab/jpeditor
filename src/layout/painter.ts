@@ -252,11 +252,12 @@ export class JinpuPainter extends ScorePainter {
    * 按原谱排一遍（`lyricStack > 0`，多段叠在同一条谱行下），标题排在第一页顶上
    * （`bookHead`）——印刷歌本的排法；`longImage` = 一张连续长纸（观感同文本谱的「原版」）。
    */
-  applyOriginal(opts: { longImage?: boolean } = {}): void {
+  applyOriginal(opts: { longImage?: boolean; firstVerseOnly?: boolean } = {}): void {
     const opt = this.layout.options;
     opt.lyricStack = opt.lrcFont.size * LYRIC_STACK_RATIO;
     opt.continuousPage = opts.longImage ?? true;
     opt.bookHead = true;
+    opt.firstVerseOnly = opts.firstVerseOnly ?? false;
   }
 
   resize(w: number, h: number, dur: string | null): void {

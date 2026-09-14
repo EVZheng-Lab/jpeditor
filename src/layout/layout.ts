@@ -1069,9 +1069,14 @@ export class NoteEntry extends Entry {
   static addLyric(ch: S.Chord, options: LayoutOptions, ent: NoteEntry, it: JpNumber, lrc: number): void {
     // 叠排：这个音符底下把各段歌词一行行摞起来（原书的排法）。段序按 lyric.number。
     const stack = options.lyricStack > 0;
-    const all = stack
+    let all = stack
       ? [...ch.notes[0].lyrics].sort((a, b) => a.number - b.number)
       : ch.notes[0].lyrics;
+    // 「只显示一行词」：叠排本该摞好几段，这里砍到编号最小的那一段（通常是第一遍）。
+    if (stack && options.firstVerseOnly && all.length > 0) {
+      const first = Math.min(...all.map((l) => l.number));
+      all = all.filter((l) => l.number === first);
+    }
     let row = 0;
     for (const l of all) {
       if (!stack && !l.refrain) {
@@ -3467,6 +3472,9 @@ export class LayoutOptions {
    *  只在「无反复、纯多段」（PlayData.isSimpple）的曲子上生效——有反复房号的谱
    *  每一遍的谱面本来就不同，叠不到一起。 */
   lyricStack = 0;
+  /** 叠排时只留**编号最小的那一段词**（原样档「只显示一行词」开关）。对 `lyricStack <= 0`
+   *  的排法无意义（那边本就一遍一行）。 */
+  firstVerseOnly = false;
   /** **一张连续长纸**：不按纸张高度分页，所有谱行首尾相接排成一页（高度由内容定）。
    *  「原样」档走它——那一档是「原样展示」，与文本谱的「原版」同一种观感；
    *  展开档仍按 16:9 的纸分页。见 `Line.layoutVertically` 与 `JinpuPainter.resize`。 */

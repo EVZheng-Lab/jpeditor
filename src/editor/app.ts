@@ -170,10 +170,16 @@ export class App implements OmrHost, PlaybackHost {
    *  按 B 张纸排。 */
   get layoutPage(): { w: number; h: number } {
     if (this.jpProfile === "pptx") return { w: this.pageW, h: this.pageH };
+    return this.originalPaperSize;
+  }
+
+  /** 原样档那张纸的实际宽高，**不看当前屏幕停在哪一档**——导出原样档 PNG 要按这个排，
+   *  哪怕屏幕正显示着展开档（同 `expandedOptions` 之于 PPTX 导出）。 */
+  get originalPaperSize(): { w: number; h: number } {
     const paper = PAPER_SIZES[this.jpPaper];
     // 长图：宽固定，高度由内容说了算（传进去的只是个不参与分页的占位）
     if (!paper) return { w: LONG_IMAGE_WIDTH, h: LONG_IMAGE_WIDTH };
-    return { w: paper[0], h: paper[1] };
+    return this.jpPaperLandscape ? { w: paper[1], h: paper[0] } : { w: paper[0], h: paper[1] };
   }
 
   /** 原样档当前是不是长图那一档。 */
@@ -225,6 +231,10 @@ export class App implements OmrHost, PlaybackHost {
   }
   /** 原样档的纸（键取自 `PAPER_SIZES`，「长图」是其中一档）。 */
   jpPaper = PAPER_DEFAULT;
+  /** 原样档纸张是否横放（宽高对调）。「长图」没有固定宽高比，这个开关对它不生效。 */
+  jpPaperLandscape = false;
+  /** 原样档多段歌词叠排时，只显示编号最小的那一段（第一遍）。 */
+  jpFirstVerseOnly = false;
   /** 文本谱「原样」档的纸（展开档与 `.jpwabc` 共用 pageW/pageH）。 */
   puPaper = PAPER_DEFAULT;
   /** 文本谱原样档音符数字的字号（pt）。0 = 跟随版式量到的原尺寸。展开档与 `.jpwabc` 共用 `_sizes.pptx`。 */
@@ -271,7 +281,7 @@ export class App implements OmrHost, PlaybackHost {
       opt.titleSize = this.titleSize;
       opt.creditSize = this.creditSize;
       // 排版输出的选项最后灌，覆盖在上面那几个之上（契约见 JinpuPainter.applyOriginal）
-      p.applyOriginal({ longImage: this.jpLongImage });
+      p.applyOriginal({ longImage: this.jpLongImage, firstVerseOnly: this.jpFirstVerseOnly });
       this.painter = p;
     }
     this.painter.score = score;
@@ -319,7 +329,8 @@ export class App implements OmrHost, PlaybackHost {
 
   /** Apply page-size / font-size / title-size / credit-size / color render settings and re-render. */
   applyRenderSettings(opts: {
-    pageW?: number; pageH?: number; jpPaper?: string;
+    pageW?: number; pageH?: number; jpPaper?: string; jpPaperLandscape?: boolean;
+    jpFirstVerseOnly?: boolean;
     puPaper?: string; puFontSize?: number;
     fontSize?: number; titleSize?: number; creditSize?: number; color?: number; bgColor?: number;
   }): void {
@@ -327,6 +338,8 @@ export class App implements OmrHost, PlaybackHost {
     if (opts.pageH) this.pageH = opts.pageH;
     // 原样档的纸要在 _rebuildPainter 之前定好——那里按 jpLongImage 灌 continuousPage
     if (opts.jpPaper && isPaper(opts.jpPaper)) this.jpPaper = opts.jpPaper;
+    if (opts.jpPaperLandscape !== undefined) this.jpPaperLandscape = opts.jpPaperLandscape;
+    if (opts.jpFirstVerseOnly !== undefined) this.jpFirstVerseOnly = opts.jpFirstVerseOnly;
     if (opts.puPaper && isPaper(opts.puPaper)) this.puPaper = opts.puPaper;
     if (opts.puFontSize !== undefined) this.puFontSize = Math.min(200, Math.max(0, opts.puFontSize));
     if (opts.color !== undefined) this._colors[this._colorKey].fg = opts.color;
@@ -381,6 +394,8 @@ export class App implements OmrHost, PlaybackHost {
     if (s.originalBgColor !== undefined) this._colors.original.bg = s.originalBgColor;
     if (s.zoom) this.zoom = s.zoom;
     if (s.jpPaper && isPaper(s.jpPaper)) this.jpPaper = s.jpPaper;
+    if (s.jpPaperLandscape !== undefined) this.jpPaperLandscape = s.jpPaperLandscape;
+    if (s.jpFirstVerseOnly !== undefined) this.jpFirstVerseOnly = s.jpFirstVerseOnly;
     if (s.puPaper && isPaper(s.puPaper)) this.puPaper = s.puPaper;
     if (s.puFontSize !== undefined) this.puFontSize = s.puFontSize;
     if (s.jpProfile === "normal" || s.jpProfile === "pptx") this.jpProfile = s.jpProfile;
@@ -402,6 +417,8 @@ export class App implements OmrHost, PlaybackHost {
       creditSize: this._sizes.pptx.creditSize,
       originalFontSize: this._sizes.normal.fontSize,
       jpPaper: this.jpPaper,
+      jpPaperLandscape: this.jpPaperLandscape,
+      jpFirstVerseOnly: this.jpFirstVerseOnly,
       puPaper: this.puPaper,
       puFontSize: this.puFontSize,
       expandedColor: this._colors.expanded.fg,

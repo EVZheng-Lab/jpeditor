@@ -22,6 +22,10 @@ export interface PersistedSettings {
   /** 原样档的纸（`PAPER_SIZES` 的键，「长图」是其中一档）。
    *  展开档只选比例（pageW/pageH），两种格式共用。 */
   jpPaper?: string;
+  /** 原样档纸张是否横放（宽高对调）。「长图」那一档没有固定宽高比，此项对它不生效。 */
+  jpPaperLandscape?: boolean;
+  /** 原样档多段歌词叠排时，是否只显示编号最小的那一段（第一遍）。 */
+  jpFirstVerseOnly?: boolean;
   puPaper?: string;
   /** 文本谱**原样档**音符数字的字号（pt）。0 = 跟随版式量到的原尺寸。展开档与 `.jpwabc` 共用上面那三个字号。 */
   puFontSize?: number;

@@ -3,6 +3,7 @@ import type { App } from "./app";
 import { scoreToMidi } from "../score/midi";
 import { buildPptx } from "./pptx";
 import { ExpandedPainter } from "../jianpu/expanded";
+import { JinpuPainter } from "../layout/painter";
 import { encodeJpwabc, isTauriRuntime, saveBytes } from "./fileio";
 import { scoreToJpwabc } from "../score/jpscore";
 import { puToMusicXml } from "../pu";
@@ -110,6 +111,40 @@ export async function exportCurrentPagePng(app: App): Promise<void> {
   if (!svg) throw new Error("当前页面没有可导出的乐谱");
   const bytes = await svgToBytes(svg, 2, colorToCss(app.bgColor));
   await saveBytes(bytes, `${baseName(app)}-第${app.pageIndex + 1}页.png`, "image/png");
+}
+
+/** 按原样档另排一份，供导出用。屏幕已在原样档时直接用屏幕那个，省一次排版。
+ *  **设置取原样档那一套**（字号/颜色/纸张/横版/只显示一行词），不管屏幕现在停在展开档还是哪——
+ *  同 `pptxPainter` 之于展开档导出，两者对称。 */
+export function jpOriginalPainter(app: App): JinpuPainter {
+  if (app.painter instanceof JinpuPainter) return app.painter;
+  const score = app.painter.score;
+  if (!score) throw new Error("这份简谱里没有可导出的曲行");
+  const sizes = app.sizesOf("normal");
+  const p = new JinpuPainter(sizes.fontSize);
+  const opt = p.layout.options;
+  opt.smuflMeta = app.meta;
+  opt.color = app.colorsOf("original").fg;
+  opt.titleSize = sizes.titleSize;
+  opt.creditSize = sizes.creditSize;
+  p.applyOriginal({ longImage: app.jpLongImage, firstVerseOnly: app.jpFirstVerseOnly });
+  p.score = score;
+  const { w, h } = app.originalPaperSize;
+  p.resize(w, h, app.breakDesc);
+  return p;
+}
+
+/** 导出原样档为 PNG——「长图」是一整张连续的图，就一个文件；分页纸（A4 等）逐页各出一张。 */
+export async function exportJpOriginalPng(app: App): Promise<void> {
+  const painter = jpOriginalPainter(app);
+  const bg = colorToCss(app.colorsOf("original").bg);
+  const name = baseName(app);
+  for (let i = 0; i < painter.pageCount; i++) {
+    const svg = painter.renderPage(i);
+    const bytes = await svgToBytes(svg, 2, bg);
+    const suffix = painter.pageCount > 1 ? `-第${i + 1}页` : "";
+    await saveBytes(bytes, `${name}${suffix}.png`, "image/png");
+  }
 }
 
 export async function exportMidi(app: App): Promise<void> {
@@ -268,6 +303,7 @@ const EXPORT_ITEMS: readonly ExportItem[] = [
   { label: "MIDI", available: isMixed, run: exportMidi },
   { label: "MusicXML", available: isMixed, run: exportMusicXml },
   // 简谱
+  { label: "PNG（原样）", available: isJp, run: exportJpOriginalPng },
   { label: "PPTX", available: isJp, run: exportPptx },
   { label: "MIDI", available: isJp, run: exportMidi },
   { label: "MusicXML", available: isJp, run: exportMusicXml },

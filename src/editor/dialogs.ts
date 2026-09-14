@@ -190,6 +190,21 @@ export function showOptionsDialog(app: App): void {
     false,
   );
   const jpPaper = paperSelect(ORIGINAL_PAPERS, (k) => PAPER_SIZES[k], (k) => k === app.jpPaper, true);
+  // 横版 = 原样档纸张宽高对调（`App.layoutPage`）；「长图」宽固定高不设上限，横竖对它没意义，
+  // 选中长图时禁用，避免让人以为勾了会有效果。
+  const jpLandscape = document.createElement("input");
+  jpLandscape.type = "checkbox";
+  jpLandscape.checked = app.jpPaperLandscape;
+  const syncLandscapeDisabled = () => {
+    jpLandscape.disabled = jpPaper.value === "长图";
+  };
+  syncLandscapeDisabled();
+  jpPaper.addEventListener("change", syncLandscapeDisabled);
+
+  // 只显示一行词：多段歌词叠排时只留第一段（`LayoutOptions.firstVerseOnly`）。
+  const jpFirstVerse = document.createElement("input");
+  jpFirstVerse.type = "checkbox";
+  jpFirstVerse.checked = app.jpFirstVerseOnly;
 
   // ---- 每页行数（写进文档 .Layout 段，只有 jpwabc 有这个段）----
   const lines = document.createElement("input");
@@ -216,7 +231,7 @@ export function showOptionsDialog(app: App): void {
   const puFont = num(app.puFontSize || Math.round(app.puPainter?.digitFontSize ?? 0), 6, 200);
 
   if (isJianpu) {
-    body.append(labeled("纸张", jpPaper));
+    body.append(labeled("纸张", jpPaper), labeled("横版", jpLandscape), labeled("只显示一行词", jpFirstVerse));
   } else if (isPpt) {
     body.append(labeled("谱面比例", ratio));
   }
@@ -282,6 +297,8 @@ export function showOptionsDialog(app: App): void {
     app.applyRenderSettings({
       pageW: w, pageH: h, fontSize, titleSize, creditSize,
       jpPaper: isJianpu ? jpPaper.value : undefined,
+      jpPaperLandscape: isJianpu ? jpLandscape.checked : undefined,
+      jpFirstVerseOnly: isJianpu ? jpFirstVerse.checked : undefined,
       puPaper: isPu ? puPaper.value : undefined,
       puFontSize: isPu ? parseInt(puFont.value, 10) || 0 : undefined,
       color: argb, bgColor: colorValue(bgColor, app.bgColor),

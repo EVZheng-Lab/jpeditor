@@ -8,6 +8,19 @@
 ![Platform](https://img.shields.io/badge/platform-Web%20%7C%20macOS%20%7C%20Windows-555)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
+## 本 Fork 的改动
+
+本仓库 Fork 自原始项目 **[lodebar2026/jpeditor](https://github.com/lodebar2026/jpeditor)**，
+在原版基础上给「原样」排版档新增了三项设置（工具栏「设置」面板）：
+
+- **横版**：原样档纸张（A4/A5/B5/Letter）新增宽高对调开关，纸张选好后配合工具栏「按乐句重排」
+  即可让内容按新的纸宽重新断行、真正利用横版多出来的宽度。
+- **只显示一行词**：多段歌词叠排时只保留编号最小的一段（第一遍），不用手动删改 `.Words` 源码。
+- **导出 → PNG（原样）**：新增按「原样档」当前设置（横版 / 只显示一行词 / 纸张）直接导出 PNG
+  的选项，与原有「导出 PPTX」（固定走展开档、逐段展开）互不影响、各自独立。
+
+其余功能与原版一致，感谢原作者 [@lodebar2026](https://github.com/lodebar2026) 的工作。
+
 ## 快速入口 / Quick start
 
 | | 入口 | 说明 |
