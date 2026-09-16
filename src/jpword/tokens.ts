@@ -5,6 +5,7 @@
 
 import { CharStream, CommonTokenStream } from "antlr4";
 import JpwabcLexer from "./parser/JpwabcLexer.js";
+import { expandVoiceAliases, origOffset } from "./alias";
 
 // custom token types (must not collide with ANTLR lexer types 1..12)
 export const TokType = {
@@ -90,8 +91,15 @@ export class TokenData {
 }
 
 // .Voice: tokenize via the ANTLR lexer, emitting Space for skipped gaps.
+//
+// **词法器吃的是展开后的文本，吐出去的必须是原文那几个字**：`{yy}` 要先展开成 `{YanYin}`
+// 词法器才认（见 jpword/alias.ts），而这份 token 流是**逐字符连续**的契约
+// ——`editor/highlight.ts` 按 token 文本长度累加偏移，多吐 4 个字整行着色就往后错。
+// 所以每个 token 的首尾都用 `origOffset` 换回原文下标，再从原文切。
 function parseVoiceTokens(res: TokenData, txt: string): void {
-  const chars = new CharStream(txt);
+  const { text, edits } = expandVoiceAliases(txt);
+  const at = (i: number): number => origOffset(edits, i);
+  const chars = new CharStream(text);
   const lexer = new JpwabcLexer(chars);
   lexer.removeErrorListeners();
   const tokStrm = new CommonTokenStream(lexer);
@@ -101,11 +109,11 @@ function parseVoiceTokens(res: TokenData, txt: string): void {
     if (t.type === -1 /* EOF */) continue;
     const startIndex = (t as unknown as { start: number }).start;
     const stopIndex = (t as unknown as { stop: number }).stop;
-    if (startIndex > last) res.space(txt.substring(last, startIndex));
-    res.add({ type: t.type, text: t.text ?? "" });
+    if (startIndex > last) res.space(txt.substring(at(last), at(startIndex)));
+    res.add({ type: t.type, text: txt.substring(at(startIndex), at(stopIndex + 1)) });
     last = stopIndex + 1;
   }
-  if (txt.length > last) res.space(txt.substring(last));
+  if (text.length > last) res.space(txt.substring(at(last)));
 }
 
 // .Words: lyric-spec lines vs. lyric text split on '/'.
@@ -141,13 +149,22 @@ function parseTitleTokens(res: TokenData, txt: string): void {
       res.newLine();
       continue;
     }
+    // 注释行与认不出的行**也得吐出去**：这份 token 流是逐字符连续的，少吐一行会让它之后
+    // 所有着色整体错位（editor/highlight.ts 按 token 文本长度累加偏移）。段落体里的 `//`
+    // 到不了 `TokenData.parse` 顶层那个分支——那里是按段落整块切下来的。
+    if (l.startsWith("//")) {
+      res.add({ type: JpwabcLexer.LINE_COMMENT, text: l });
+      res.newLine();
+      continue;
+    }
     const idx = l.indexOf("=");
     if (idx > 0) {
       res.add({ type: TokType.MetaKey, text: l.substring(0, idx + 1) });
       res.add({ type: TokType.MetaValue, text: l.substring(idx + 1) });
       res.newLine();
     } else {
-      console.error("bad line");
+      res.add({ type: TokType.Unknown, text: l });
+      res.newLine();
     }
   }
 }

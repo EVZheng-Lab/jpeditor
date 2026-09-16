@@ -7,6 +7,7 @@
 import { Fraction } from "../common/fraction";
 import { BarStyle, StartStopDiscontinue } from "./enums";
 import { jpTonicOctaveShift, keyAlter } from "./jppitch";
+import type { SourceRef } from "../common/source";
 
 export { BarStyle, StartStopDiscontinue };
 
@@ -14,6 +15,8 @@ export class Credit {
   type: string | null = null;
   text = "";
   page = 0;
+  /** 这一行署名在 `.jpwabc` 原文里的位置（谱面点选定位用，只有 jpw 那条路有）。 */
+  source: SourceRef | null = null;
 }
 
 export class Time {
@@ -49,6 +52,8 @@ export class Lyric {
   text = "";
   number = 0;
   refrain = false;
+  /** 这个字在 `.jpwabc` 的 `.Words` 段里的位置（谱面点选定位用，只有 jpw 那条路有）。 */
+  source: SourceRef | null = null;
 }
 
 export function doPairTuplet(tupletNotes: Note[]): void {
@@ -242,6 +247,8 @@ export class BarlineEntry extends Entry {
    *  style 分不开，故另记一笔（MusicXML 导出要据此写 `<repeat>`；见 musicxmlout.ts）。
    *  `forward`（`|:`）出现在小节开头，但解析时被 push 到**前一小节**末尾，语义上属于下一小节左端。 */
   repeat: "forward" | "backward" | null = null;
+  /** 这根小节线在 `.jpwabc` 原文里的位置（谱面点选定位；只有 jpw 那条路有）。 */
+  source: SourceRef | null = null;
   constructor(mea: Measure) {
     super(mea);
     this.duration = new Fraction(0);
@@ -260,6 +267,10 @@ export interface ChordDirection {
    *  `justify="right"`）。这类要贴着小节线右对齐排，不居中在音符上方。 */
   atBarEnd?: boolean;
 }
+
+/** 某个谱面对象在 `.jpwabc` **原文**里的位置。定义与口径见 `common/source.ts`
+ *  ——那份是全仓唯一一份，排版层与文本谱那条路用的是同一个。 */
+export type { SourceRef } from "../common/source";
 
 export class Chord extends Entry {
   notes: Note[] = [];
@@ -294,6 +305,14 @@ export class Chord extends Entry {
   /** **倚音**：印在主音符左上角的小号数字（原书 260/264 两首共 7 颗）。
    *  MusicXML 里是 duration 为 0 的独立 `<note><grace/>`，模型上挂在它修饰的那个和弦上。 */
   graceNotes: Note[] = [];
+  /** 这个音符在 `.jpwabc` 原文里的位置，谱面点选定位用（`docs/实现/谱面就地编辑.md`）。
+   *  **只有走 `jpwimport` 那条路才有**：Score 也从 MusicXML 建，那条路没有源码可指，故为 null。
+   *  区间是**整个 note 词素**（含倚音 `{6,}`、弧 `(` `)`、减时线、八度逗号）。
+   *  命中与光标联动认它——光标停在 `7,__` 的任何一格上都该点亮这个音符。 */
+  source: SourceRef | null = null;
+  /** 同上，但只有**数字那一格**。点选与就地编辑认它：用户点的是那个数字，
+   *  改它不该连带把减时线、八度逗号、弧线一起换掉（`layout.ts::PageItem.editSource`）。 */
+  pitchSource: SourceRef | null = null;
 
   hasLrc(num: number): boolean {
     for (const nt of this.notes) {
@@ -637,6 +656,15 @@ export class Score {
   creator = new Map<string, string>();
   credit: Credit[] = [];
   title = "";
+  /** 标题在 `.jpwabc` 原文里的位置（`.Title` 段的 `Title = …`，谱面点选定位用）。 */
+  titleSource: SourceRef | null = null;
+  /** 纸顶那块调号拍号的原文位置（`.Title` 段的 `KeyAndMeters = …`）。 */
+  keyMeterSource: SourceRef | null = null;
+  /** 纸顶那块调号拍号**印不印**。`.jpwabc` 那条路按源码定：`KeyAndMeters` 没写或写成空值
+   *  就是「这首不印调号拍号」，否则源码里已经删干净了、谱面上却还挂着一个凭空的 `1=C 4/4`
+   *  （那块的内容取自 `measures[0]` 的调号拍号，与源码有没有写这一行无关）。
+   *  别的来路（MusicXML / OMR）默认印。 */
+  showKeyMeter = true;
   playData = new PlayData();
 
   clearSystemBreak(): void {

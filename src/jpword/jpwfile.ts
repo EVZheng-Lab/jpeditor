@@ -3,9 +3,18 @@
 // this module covers the semantic parse used by JpwImport.fromJpw.
 
 import { parseVoiceText, type VoiceContext } from "./parse";
+import { expandVoiceAliases, origColumn, type AliasEdit } from "./alias";
+import type { SourceRef } from "../common/source";
 
 export abstract class Section {
   lines: string[] = [];
+  /** 与 `lines` **逐项对应**的原文行号（0 基）。
+   *
+   *  `JpwFile.parse` 收行时跳过空行与 `//` 注释行，段落体又是 `lines.join("\n")` 交给
+   *  ANTLR 的，所以「段内行号」与「文档行号」之间**没有固定差值**——中间隔着被丢掉的那些行。
+   *  谱面点选定位要把 token 位置换回文档位置，只能靠这份逐行记的账（见
+   *  `docs/实现/谱面就地编辑.md`）。 */
+  lineNos: number[] = [];
   constructor(public name: string) {}
   parse(): boolean {
     return true;
@@ -67,18 +76,28 @@ export class RepeatSection extends Section {
 
 export class VoiceSection extends Section {
   voiceData!: VoiceContext;
+  /** 演奏记号简写展开留下的列位移（`{yy}` → `{YanYin}` 长 4 格，见 `jpword/alias.ts`）。
+   *  ANTLR 给的行列是**展开之后**那份文本的，谱面点选要的是原文的，靠这份账换回去。 */
+  private aliasEdits: AliasEdit[] = [];
   override parse(): boolean {
     const text = this.lines.join("\n");
+    this.aliasEdits = expandVoiceAliases(text).edits;
     const voice = parseVoiceText(text);
     if (voice === null) return false;
     this.voiceData = voice;
     return true;
+  }
+  /** ANTLR 的（段内行号 0 基, 展开后列号）→ 原文列号。 */
+  origColumn(line: number, col: number): number {
+    return origColumn(this.aliasEdits, line, col);
   }
 }
 
 export class WordsItem {
   text = "";
   alignPos = -1;
+  /** 这个字在文档里的位置（谱面点选定位用）。`/`（跳过一个音符）那种空项没有。 */
+  source: SourceRef | null = null;
   constructor(s?: string) {
     if (s === undefined) return;
     this.text = "";
@@ -120,6 +139,25 @@ export class WordsSection extends Section {
     const punc = ".,;'!?。：，；！？“”｡､、";
     const reg = WordsSection.regLrcSpec;
 
+    // 扫描位置 → 文档行列（谱面点选定位）。段内行号经 `lineNos` 换回文档行号，
+    // 口径同 `score/jpwimport.ts` 那一侧；`lineStarts` 是 `text` 里每一段内行的起点。
+    const lineStarts: number[] = [0];
+    for (let i = 0; i < text.length; i++) if (text[i] === "\n") lineStarts.push(i + 1);
+    const spanAt = (from: number, len: number): SourceRef | null => {
+      let lo = 0, hi = lineStarts.length - 1;
+      while (lo < hi) {
+        const mid = (lo + hi + 1) >> 1;
+        if (lineStarts[mid] <= from) lo = mid; else hi = mid - 1;
+      }
+      const docLine = this.lineNos[lo];
+      return docLine === undefined ? null : { line: docLine, column: from - lineStarts[lo], length: len };
+    };
+    /** 收一个字：记下它在原文里的那一段。 */
+    const push = (item: WordsItem, from: number, len: number): void => {
+      item.source = spanAt(from, len);
+      this.last().data.push(item);
+    };
+
     while (pos < text.length) {
       const ch = text[pos];
       if (ch === "\n") {
@@ -154,7 +192,7 @@ export class WordsSection extends Section {
         const end = text.indexOf("}", pos + 1);
         if (end < 0) throw new Error("");
         const t = text.substring(pos + 1, end);
-        this.last().data.push(new WordsItem(t));
+        push(new WordsItem(t), pos, end + 1 - pos);
         pos = end + 1;
         continue;
       }
@@ -165,6 +203,7 @@ export class WordsSection extends Section {
       }
       if (ch === "/") {
         pos++;
+        // 空项：这个音符不跟词，谱面上没有东西可点，故不记位置
         this.last().data.push(new WordsItem());
         continue;
       }
@@ -177,20 +216,23 @@ export class WordsSection extends Section {
           end++;
         }
         const t = text.substring(pos, end);
-        this.last().data.push(new WordsItem(t));
+        push(new WordsItem(t), pos, end - pos);
         pos = end + 1;
         continue;
       }
       if (punc.includes(ch)) {
         const last = this.last().data;
         if (last.length > 0) {
-          last[last.length - 1].text += ch;
+          const prev = last[last.length - 1];
+          prev.text += ch;
+          // 标点并进前一个字，源码区间跟着往后长一格（`望。` 要整体选中）
+          if (prev.source) prev.source = { ...prev.source, length: prev.source.length + 1 };
           pos++;
           continue;
         }
       }
       if (ch.charCodeAt(0) < 0x7f) console.error("unsupported char?");
-      this.last().data.push(new WordsItem(ch));
+      push(new WordsItem(ch), pos, 1);
       pos++;
     }
 
@@ -204,6 +246,9 @@ export class WordsSection extends Section {
         if (prev.text.endsWith("“")) {
           prev.text = prev.text.replace(/“$/, "");
           d.text = "“" + d.text;
+          // 引号挪了家，源码区间跟着挪：前一项短一格、这一项往左长一格
+          if (prev.source) prev.source = { ...prev.source, length: prev.source.length - 1 };
+          if (d.source) d.source = { ...d.source, column: d.source.column - 1, length: d.source.length + 1 };
         }
         prev = d;
       }
@@ -218,12 +263,18 @@ export class WordsSection extends Section {
 
 export class TitleSection extends Section {
   values = new Map<string, string>();
+  /** 与 `values` 同键：字段**值**在文档里的位置（谱面点选定位，见
+   *  `docs/实现/谱面就地编辑.md`）。指的是 `=` 之后那一段原文，不含键名与等号。 */
+  valueSpans = new Map<string, SourceRef>();
 
   get title(): string | null {
     return this.getValue("title");
   }
+  /** `1=F,2/4` 那一整段原文。**写了等号没写值算没写**（返回 null）——用户把调号拍号删空
+   *  就是不要它了，下面两个 getter 与 `jpwimport.ts` 都按 null 走默认值/不印。 */
   get keyAndMeters(): string | null {
-    return this.getValue("KeyAndMeters");
+    const v = this.getValue("KeyAndMeters");
+    return v === null || v.trim().length === 0 ? null : v;
   }
   get wordsMusicBy(): string | null {
     return this.getValue("WordsByAndMusicBy");
@@ -246,20 +297,26 @@ export class TitleSection extends Section {
     const km = this.keyAndMeters;
     if (km === null) return null;
     const arr = km.split(",");
-    return substringAfter(arr[0], "=").trim();
+    const k = substringAfter(arr[0], "=").trim();
+    return k.length === 0 ? null : k;
   }
+  /** 拍号。**只写了调号没写拍号**（`1=F`，没有逗号那一半）时返回 null 走默认 4/4——
+   *  从前这里直接 `arr[1].trim()`，少一半就抛 TypeError，整篇 import 挂掉、
+   *  `App.reload` 静悄悄退回上一版谱面，看着就是「改了没反应 / 删不掉」。 */
   get meter(): string | null {
     const km = this.keyAndMeters;
     if (km === null) return null;
     const arr = km.split(",");
-    return arr[1].trim();
+    const m = arr[1]?.trim() ?? "";
+    return m.length === 0 ? null : m;
   }
   getValue(key: string): string | null {
     return this.values.get(key.toLowerCase()) ?? null;
   }
 
   override parse(): boolean {
-    for (const l of this.lines) {
+    for (let i = 0; i < this.lines.length; i++) {
+      const l = this.lines[i];
       if (l.trim().length === 0) continue;
       const idx = l.indexOf("=");
       if (idx > 0) {
@@ -268,6 +325,18 @@ export class TitleSection extends Section {
         v = substringAfter(v, "{");
         v = substringBeforeLast(v, "}");
         this.values.set(key.toLowerCase(), v);
+        // 值在原文里的那一段：从 `=` 之后**第一个非空白字符**起，到行尾去掉尾随空白。
+        // 剥掉的 `{}` 仍算在里面——就地编辑时用户要看到的是原文那一段。
+        const after = l.substring(idx + 1);
+        const lead = after.length - after.trimStart().length;
+        const docLine = this.lineNos[i];
+        if (docLine !== undefined) {
+          this.valueSpans.set(key.toLowerCase(), {
+            line: docLine,
+            column: idx + 1 + lead,
+            length: after.trim().length,
+          });
+        }
       } else {
         console.error("bad line");
       }
@@ -307,7 +376,10 @@ export class JpwFile {
   }
 
   parse(lines: string[]): boolean {
-    for (const l of lines) {
+    // 行号要**逐行记**（`Section.lineNos`）：下面这两处 continue 把空行与注释行丢掉了，
+    // 段内行号因此不等于文档行号。
+    for (let i = 0; i < lines.length; i++) {
+      const l = lines[i];
       if (l.startsWith("//")) continue;
       if (l.length === 0) continue;
       if (l.startsWith(".")) {
@@ -315,7 +387,9 @@ export class JpwFile {
         continue;
       }
       if (this.sections.length === 0) throw new Error("");
-      this.sections[this.sections.length - 1].lines.push(l);
+      const sec = this.sections[this.sections.length - 1];
+      sec.lines.push(l);
+      sec.lineNos.push(i);
     }
     for (const s of this.sections) {
       if (!s.parse()) return false;

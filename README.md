@@ -1,137 +1,211 @@
-# jpeditor
+# jpeditor · EVZheng-Lab 分支
 
-> 开源的简谱（JP-Word / `.jpwabc`）在线排版与编辑器 · An open-source jianpu (numbered
-> musical notation) editor & typesetter.
+> **这是 [lodebar2026/jpeditor](https://github.com/lodebar2026/jpeditor) 的分支。**
+>
+> 项目是什么、在线 demo、macOS / Windows 安装包、完整功能说明与技术文档，
+> **一律看原仓库** → **https://github.com/lodebar2026/jpeditor**
+>
+> 本文件只写两件事：**本分支改了什么**，以及一份
+> [`.jpwabc` 记谱语法速查](#jpwabc-记谱语法速查)。
 
-[![Release](https://img.shields.io/github/v/release/lodebar2026/jpeditor?display_name=tag)](https://github.com/lodebar2026/jpeditor/releases)
-[![Live demo](https://img.shields.io/badge/%F0%9F%8C%90%20Live%20demo-online-2b6cb0)](https://lodebar2026.github.io/jpeditor/)
-![Platform](https://img.shields.io/badge/platform-Web%20%7C%20macOS%20%7C%20Windows-555)
+[![Upstream](https://img.shields.io/badge/upstream-lodebar2026%2Fjpeditor-2b6cb0)](https://github.com/lodebar2026/jpeditor)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-## 本 Fork 的改动
+感谢原作者 [@lodebar2026](https://github.com/lodebar2026) 的工作。
 
-本仓库 Fork 自原始项目 **[lodebar2026/jpeditor](https://github.com/lodebar2026/jpeditor)**，
-在原版基础上给「原样」排版档新增了三项设置（工具栏「设置」面板）：
+---
 
-- **横版**：原样档纸张（A4/A5/B5/Letter）新增宽高对调开关，纸张选好后配合工具栏「按乐句重排」
-  即可让内容按新的纸宽重新断行、真正利用横版多出来的宽度。
-- **只显示一行词**：多段歌词叠排时只保留编号最小的一段（第一遍），不用手动删改 `.Words` 源码。
-- **导出 → PNG（原样）**：新增按「原样档」当前设置（横版 / 只显示一行词 / 纸张）直接导出 PNG
-  的选项，与原有「导出 PPTX」（固定走展开档、逐段展开）互不影响、各自独立。
+## 本分支改了什么
 
-其余功能与原版一致，感谢原作者 [@lodebar2026](https://github.com/lodebar2026) 的工作。
+逐条更新日志见 [CHANGELOG.md](CHANGELOG.md)。
 
-## 快速入口 / Quick start
+### 谱面就地编辑与点选联动
 
-| | 入口 | 说明 |
-| :-: | --- | --- |
-| 🌐 | **[在线使用 / Live demo](https://lodebar2026.github.io/jpeditor/)** | 免安装，浏览器直接打开 |
-| 🍎 | **[macOS 版下载](https://github.com/lodebar2026/jpeditor/releases/latest)**（`.dmg`，Apple Silicon） | 首次打开提示“已损坏”见 [macOS 打不开](docs/macOS-打不开.md) |
-| 🪟 | **[Windows 版下载](https://github.com/lodebar2026/jpeditor/releases/latest)**（`x64-setup.exe`） | 安装包，Windows 10/11 x64 |
+在右边「排版」里直接改谱，不必回左边源码上找：点谱面上的字 → 左边源码选中并滚过去；
+光标停在某个词素上 → 谱面对应的字高亮；**双击**原地弹输入框改它，回车落回源码。
+音符 / 歌词 / 标题 / 词曲署名 / 调号拍号 / 小节线都能点，两种格式（`.jpwabc` 与文本谱）都有。
 
-简谱（JP-Word / `.jpwabc`）与**文本谱**（番茄简谱 / 诗歌本动态谱）排版与编辑器。
+判据与踩坑见 [docs/实现/谱面就地编辑.md](docs/实现/谱面就地编辑.md)。
 
-左侧高亮代码编辑器，右侧实时简谱预览，支持点选、翻页、**文本谱原生编辑**（番茄简谱脚本 /
-诗歌本文本谱，原版与 PPT 双版面）、**简谱与五线谱混排**（加载 MusicXML 排版）、MusicXML
-导入导出、**简谱图片识别（OMR）**、**ABC 记谱导入**、**乐谱播放**，以及导出
-PDF / PNG / MIDI / 矢量 PPTX。
+- **点音符只选中数字那一格**。音符挂两段区间：宽的（整个词素 `{yy}(7,__`）管命中与光标联动
+  ——光标停在词素的任何一格上都该点亮这个音符；窄的（只有数字）管点选与改写
+  ——用户点的是那个数字，改它不该连带把 `_` 减时线、`,` 八度逗号一起换掉。
+- **重排之后高亮还在**，且**反查按选区起点不按 `head`**：`.jpwabc` 里相邻词素之间常常没有
+  空格（`2_1)`、`|1'.`），按 `head` 找会点亮下一个字，有没有空格决定它犯不犯，看着就是偶发。
 
-![首页](docs/screenshot-start.png)
+### 纸顶的调号拍号可以删掉了
 
-![界面](docs/screenshot.png)
+`KeyAndMeters` 的值删空（留 `KeyAndMeters = `）→ 纸顶那块 `1=F 2/4` 跟着不印。
 
-## English
+从前这块内容取自第一小节、与源码写没写无关，删了也照画；而且 `KeyAndMeters` 只写一半
+（`1=F`，没有拍号那一半）会让整篇 import 抛异常，`reload` 再一声不响地退回上一版谱面
+——看着就是「这个删不掉」。现在两头都修了，**重排失败也会在状态栏说一句**
+（「导入失败，右边仍是上一版谱面：…」），不再只有控制台看得见。
 
-**jpeditor** is an open-source editor and typesetter for **jianpu** (Chinese
-numbered musical notation) in the `.jpwabc` (JP-Word) format. Edit the score as
-text on the left and see a live SVG preview on the right. It also natively supports
-**plain-text jianpu scripts** (Fanqie / Shigeben — the latter known as "dynamic score"
-in the *Shigeben* app). It supports **mixed
-jianpu + staff (Western) notation** typeset from MusicXML, MusicXML import & export,
-**optical music recognition (OMR)** of jianpu images, **ABC notation import**,
-**score playback**, and export to
-**PDF / PNG / MIDI / vector PPTX**. It runs **in the browser**
-(no install) and as a lightweight **Windows / macOS desktop app** (Tauri 2).
+### 「按乐句重排 / 原始排版」跟着手改走
 
-- 🌐 Live demo: <https://lodebar2026.github.io/jpeditor/>
-- 🍎 macOS (Apple Silicon, `.dmg`): [latest release](https://github.com/lodebar2026/jpeditor/releases/latest)
-- 🪟 Windows (x64 installer, `.exe`): [latest release](https://github.com/lodebar2026/jpeditor/releases/latest)
+两个按钮现在都按**编辑器里当前这份文本**重排；从前 `.jpwabc` 那条读的是导入时的 MusicXML，
+手工补完延音线再点一下按钮，改动会被整篇覆盖且悄无声息。在乐句档里手改一个字，
+按钮会自己弹回「原始排版」，那份文本成为新的「原样」基准。
 
-## 特性
+### 演奏记号简写 `{yy}`
 
-- **`.jpwabc` 实时编辑**：CodeMirror 6 编辑器 + 语法高亮，编辑即重排重渲染
-- **SVG 矢量渲染**：乐谱以 SVG 绘制，分辨率无关；用浏览器 `getBBox` /
-  `getComputedTextLength` 测量，与渲染同一引擎、天然一致
-- **点选与高亮**：点击音符/歌词即选中（CSS 高亮，不重渲染），状态栏显示信息
-- **分页**：按比例自动分页（16:9 / 4:3 / A4），可设每页行数
-- **简谱图片识别（OMR）**：拖入简谱照片/截图即识别为 MusicXML 再导入排版。**本地识别**、
-  浏览器/桌面均可、可离线：连通域几何启发 + PaddleOCR PP-OCRv6_small 数字/歌词识别，含逐音节↔音符
-  对齐与页眉标题/词曲/调号识别
-  - **识别核对视图**：识别后自动进入「识别 / 排版」可切换模式，把识别结果按源图坐标叠加在二值图上
-    比对——支持原位叠加 / 附近浮窗 / 仅原图三种视图；点选识别对象即选中对应 `.jpwabc` 代码，
-    悬停高亮并弹出整行 / 页眉浮窗，便于逐音校对
-- **ABC 记谱导入**：拖入或「打开」`.abc` 文件即自动转 MusicXML 再排版为简谱，复用 MusicXML 导入
-  路径，天然支持多声部、连奏、重复 / volta、和弦、装饰音、broken-rhythm、调号变更、`C:` 字段作词
-  作曲等。转换忠实移植自 Willem Vree 的 `abc2xml`，输出与原脚本逐字节一致
-- **文本谱（番茄简谱 / 诗歌本动态谱）**：两套纯文本简谱记谱语言作为**第一等源格式**——
-  打开或拖入即编原文（自动嗅探方言、语法高亮、诊断提示），按各自的排版规则渲染
-  「原版」连续长图与「展开」16:9 分页两种版面，支持四声部并排、和弦、力度、倚音、跳房子等；
-  可导出 MusicXML（由文本谱直出，保留和弦/力度/多声部）、`.jpwabc`、MIDI、矢量 PPTX，
-  也能直接试听（光标逐音高亮跟随）。诗歌本文本谱即《诗歌本》app 里所说的「动态谱」。
-  见 [docs/实现/文本谱.md](docs/实现/文本谱.md)
-- **乐谱播放**：内置播放，光标跟随当前音符，两路音源；按谱面标注的速度（`.Title` 的
-  `Expression = {♩=76}`）演奏，工具条可再调 ×0.5～×2 倍速，试听与导出 MIDI 共用
-- **乐句分析排版**：MusicXML / OMR 导入时按乐句自动断行——综合歌词标点、音乐信号（延长号 /
-  终止线 / 长音 / 休止 / 连线）与重复旋律结构，在小节边界找乐句断点并凑成疏密适中的行长
-  （每页至多 4 行、末页 3+2）
-- **文件**：打开 / 保存 / 另存为 / 拖拽打开（UTF-16LE 编解码，兼容 JP-Word）
+`{YanYin}` 太长，四个演奏记号都加了简写，大小写不分，可以并列（`{yy,zy}5`）：
 
-## 安装与使用
+| 简写 | 全名 | 是什么 | 画不画得出来 |
+|---|---|---|---|
+| `{yy}` | `{YanYin}` | 延音记号 fermata ◠ | 画 |
+| `{dy}` | `{DunYin}` | 顿音 | 不画 |
+| `{by}` | `{BoYin}` | 波音 | 不画 |
+| `{zy}` | `{ZhongYin}` | 重音 | 不画 |
 
-- **浏览器在线版**（免安装）：<https://lodebar2026.github.io/jpeditor/>
-- **macOS 版**（Apple Silicon，`jpeditor_<版本>_aarch64.dmg`）：
-  [最新 Release](https://github.com/lodebar2026/jpeditor/releases/latest)
-- **Windows 版**（x64，`jpeditor_<版本>_x64-setup.exe`）：
-  [最新 Release](https://github.com/lodebar2026/jpeditor/releases/latest)
-- macOS 首次打开提示“已损坏”或“无法验证开发者”？见
-  [docs/macOS-打不开.md](docs/macOS-打不开.md)（应用未签名，属正常现象，一条命令即可解决）。
+**全名照样认**，老文件不受影响。导出时写的是简写；原版 JP-Word 只认全名，要互通就把
+`src/jpword/alias.ts` 的 `WRITE_SHORT_ARTICULATION` 设成 `false`。
 
-## 技术栈
+实现上是**交给词法器之前展开成全名**（文法与 ANTLR 生成代码一个字没动）。展开会把那一行后面的
+列号挪后 4 格，所以同时记一份位移账，点选定位、语法着色、语法错误计数三处各自换算回原文位置。
 
-完整技术框架、架构要点与项目结构见 [docs/技术栈.md](docs/技术栈.md)。
+### 原样档的横版、只显示一行词、PNG 导出
 
-## 开发
+设置面板给原样档加两项开关：**纸张横放**（宽高对调，配合「按乐句重排」让内容按新的纸宽重新断行）、
+**多段歌词叠排时只留第一遍**；导出菜单新增 **PNG（原样）**，按原样档当前设置直接出图，
+与固定走展开档的 PPTX 导出互不影响。
 
-构建、运行与无头校验命令见 [docs/开发.md](docs/开发.md)。
+---
 
-## 进度
+## 构建与回归
 
-各阶段完成情况与打包产物体积见 [docs/进度.md](docs/进度.md)。
+```bash
+npm ci
+npm run build          # tsc 严格检查 + vite 打包
+npx tsc --noEmit       # 仅类型检查
+npm run dev            # Vite 开发服务器
+```
 
-## 致谢
+本分支加的回归脚本**样本都内联在脚本里，不依赖 `testdata/`**，装完依赖直接能跑：
 
-本项目站在这些工作之上，一并致谢：
+```bash
+npm run build && node scripts/pick-check.mjs         # 谱面 ↔ 源码点选联动
+npm run build && node scripts/edit-check.mjs         # 谱面就地编辑（含调号拍号删空）
+npm run build && node scripts/alias-check.mjs        # 演奏记号简写 {yy}
+npm run build && node scripts/barline-check.mjs      # 小节线线型与反复记号
+npm run build && node scripts/phrase-edit-check.mjs  # 乐句重排跟着手改走
+```
 
-- [abc2xml](https://wim.vree.org/svgParse/abc2xml.html)（Willem Vree）—— ABC → MusicXML 转换，
-  本项目的 ABC 导入是对它的忠实移植
-- [open-fanqie](https://github.com/Linho1219/open-fanqie)（MIT）—— 番茄简谱脚本的第三方开源
-  解析/渲染实现；番茄简谱脚本规范文档见 <https://fqdoc.linho.cc/>
-- [Bravura / SMuFL](https://github.com/steinbergmedia/bravura)（Steinberg，SIL OFL）——
-  音乐字体与字形元数据
-- [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR)（Apache-2.0）—— OMR 里数字与歌词的
-  识别模型；推理运行时用 [onnxruntime-web](https://github.com/microsoft/onnxruntime) 与
-  [tesseract.js](https://github.com/naptha/tesseract.js)
-- [CodeMirror 6](https://codemirror.net/)、[ANTLR 4](https://www.antlr.org/)、
-  [Tauri 2](https://tauri.app/)、[Vite](https://vite.dev/)、[TypeScript](https://www.typescriptlang.org/)
-  —— 编辑器 / 解析 / 桌面外壳 / 构建
-- [opencc-js](https://github.com/nk2028/opencc-js)（简繁转换）、
-  [pdf.js](https://mozilla.github.io/pdf.js/)（PDF 栅格化）、
-  [jsPDF](https://github.com/parallax/jsPDF)（PDF 导出）、
-  [smplr](https://github.com/danigb/smplr)（试听音源）、
-  [fflate](https://github.com/101arrowz/fflate)（PPTX 打包）、
-  [opentype.js](https://opentype.js.org/)（字形轮廓）
+---
+
+## `.jpwabc` 记谱语法速查
+
+> 手改识别（OMR）结果、或者直接手写谱时查这一节。**每一行都是在本仓实测过的**，
+> 不是照 `Jpwabc.g4` 抄的——文法允许而实现不认的写法，单列在
+> 「[文法有、实际不能写](#六文法有实际不能写会整篇打不开)」。
+>
+> 面向用户的入门讲解在应用内「帮助 → 记谱法」。
+
+一份最小的 `.jpwabc` 长这样，谱面内容都在 `.Voice` 段：
+
+```
+.Title
+Title = {送别}
+KeyAndMeters = {1=F,2/4}
+Expression = {♩=72}
+.Voice
+1. 2_ 3__ |1_ 7,__ 6,__ 5, |$(true)
+.Words
+W1@1,1:
+长亭外///古道边
+```
+
+### 一、音符本体
+
+写在数字**之前**的：升降号、倚音、演奏记号、弧线起点。写在数字**之后**的：八度、时值、弧线收尾。
+
+| 写法 | 意思 | 备注 |
+|---|---|---|
+| `1`–`7` | 唱名 do–si | |
+| `0` | 休止符 | |
+| `5'` `5''` | 高八度、高两个八度 | 可叠 |
+| `5,` `5,,` | 低八度、低两个八度 | 可叠 |
+| `#3` | 升号 | 写在数字**前面** |
+| `b3` | 降号 | 同上 |
+| `#b3` | 还原号 | 同上（不是 `n`） |
+| `5_` `5__` | 减时线：八分、十六分 | 一条减一半 |
+| `5.` | 附点 | 时值 ×1.5 |
+| `5_.` | 附点八分 | 减时线与附点可同写 |
+| `5-` `5---` | 增时线：每条延长一拍 | `-` 不与 `_`/`.` 混写 |
+| `1'.` | 组合示例：高八度 + 附点 | 修饰按「八度 → 时值」的顺序跟在数字后 |
+
+音符之间的空格可有可无：`1 2 3` 与 `1 2_3_` 都行。**但空格会影响弧线**，见下。
+
+### 二、记号
+
+| 写法 | 意思 | 现状 |
+|---|---|---|
+| `(5 6 1')` | 连音线 / 延音线（跨不同音高叫圆滑线，跨相同音高叫延音线） | 括号**必须紧贴数字**；`( 5 6 )` 会被当成别的记号，弧线**画不出来也不报错** |
+| `(3_ \|5)` | 弧线跨小节 | 可以 |
+| 弧线跨谱行（`$(true)` 两侧） | | 模型里配上了（播放、MusicXML 导出认），**谱面上不画** |
+| `{yy}5` | 延音记号 fermata ◠ | 画得出来；写在数字后面（`5{yy}`）不算数 |
+| `{dy}` `{by}` `{zy}` | 顿音 / 波音 / 重音 | 认，但读完就丢，**谱面上没有** |
+| `{6,}5`、`{57}1` | 倚音 | 画得出来，按八分音符排 |
+| `{(3}3 4 5)` | 三连音：`{(3}` 起、`)` 收 | 只认 `{(3}` 这一种写法 |
+| `{C:0}` | JP-Word 的控制选项（间距/连线） | 认，**一概忽略** |
+| `\|` | 小节线 | |
+| `\|\|` | 双细线 | |
+| `\|]` | 终止线 | |
+| `[\|]` | 不可见小节线 | |
+| `\|:` `:\|` | 反复开始 / 结束 | |
+| `:\|\|:` | 反复收尾紧接反复开始 | 写成两根，谱面上自己并成一根 |
+| `$(true)` | 换行（谱行到此为止） | 行尾写 |
+| `$(true,0,0,true)` | 换页 | 第 4 个参数是「另起一页」 |
+| `"1=A"` | 曲中转调 | 落到**下一个**小节上 |
+| `3/4` | 曲中转拍号 | 同上 |
+
+### 三、演奏记号的简写
+
+见上文[「演奏记号简写 `{yy}`」](#演奏记号简写-yy)。读取端简写与全名都认，大小写不分。
+
+### 四、`.Voice` 之外的几段
+
+| 位置 | 写法 | 说明 |
+|---|---|---|
+| `.Title` | `Title = {送别}` | 标题。花括号可省 |
+| `.Title` | `KeyAndMeters = {1=F,2/4}` | 调号 + 拍号。**值留空 = 纸顶那块不印** |
+| `.Title` | `WordsByAndMusicBy = {李叔同,美国民谣}` | 词曲署名，`\n` 拆两行 |
+| `.Title` | `Expression = {♩=72}` | 速度（也可写纯表情文字）。ASCII 的 `J=72` 也认 |
+| `.Words` | `W1@9,1:` | 第 1 段歌词，从第 9 小节第 1 个音符起 |
+| `.Words` | `送君///送到大/路` | 一字对一个音符，`/` = 这个音符不换字（拖腔） |
+| `.Repeat` | `1-31V1` | 演唱顺序：第 1–31 小节唱第 1 段。`V1P` = 这一段唱完换页；`11.2-20V4` = 从第 11 小节第 2 个音符起 |
+| `.Layout` | `LinesPerPage = 4` / `BreakPoints = …` | 分页描述 |
+| 任意行首 | `// …` | 注释行 |
+
+### 五、常见的手改场景
+
+| 想干什么 | 怎么改 |
+|---|---|
+| 识别漏了一条延音线 | 在起弧那个音符前加 `(`、收弧那个音符后加 `)`，**都要紧贴数字** |
+| 识别漏了延音记号 | 在那个数字**前面**加 `{yy}` |
+| 音高错了 | 直接改数字；或在谱面上**双击**那个音符就地改（只换数字那一格，减时线等修饰原样留着） |
+| 时值错了 | 加减 `_`（减时）、`-`（增时）、`.`（附点） |
+| 想让某一行在这里断 | 在该处行尾写 `$(true)` 并把后面的内容换到下一行 |
+| 不想要纸顶的 `1=F 2/4` | 把 `KeyAndMeters` 的值删空（留 `KeyAndMeters = `） |
+
+### 六、文法有、实际不能写（会整篇打不开）
+
+`Jpwabc.g4` 里有产生式，但 `src/score/jpwimport.ts` 那一侧不认。**后果是整篇导入失败**——
+谱面留在上一版不动，状态栏会说一句「导入失败，右边仍是上一版谱面：…」。
+
+| 写法 | 结果 |
+|---|---|
+| `:\|:` | ✗ `bad barline: :\|:`——要这个观感请写 `:\|\|:` |
+| `::` | ✗ `bad barline: ::` |
+| `\|[1.`、`\|[结束句` | ✗ `bad barline`——**房号（1房/2房）在 `.jpwabc` 里写不了** |
+| `\|:[1` | ✗ 整段解析失败。而这**正是 `src/score/jpscore.ts` 导出带房号的曲子时写出去的形状**，所以带 1房/2房 的谱经「Score → .jpwabc」之后打不开——已知缺口，未修 |
+| `[135]` | 文法里是和弦，实现只留**最后一个数字**（`[135]` = `5`）。`.jpwabc` 装不下和弦，别写 |
+| `x` `X` | 文法里是节奏音符，实现不认这个字母，落到模型里是 `0`，**画出来是休止** |
+| `{(,}` `{(0:0,…}` | 带参数的弧线起点。参数里的逗号会被当成低八度记号，**别写**，弧线一律用 `(…)` |
+
+---
 
 ## 许可
 
-本项目代码以 MIT 授权（见 [LICENSE](LICENSE)）。随附 Bravura 字体按 SIL OFL 授权
-（见 `public/redist`）；各第三方依赖的许可以其自身声明为准。
+MIT，同上游。见 [LICENSE](LICENSE)。

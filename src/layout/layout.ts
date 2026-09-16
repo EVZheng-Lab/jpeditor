@@ -14,6 +14,7 @@ import { MetaData, GlyphCodes } from "../smufl/smufl";
 import { chordTextSegs, layoutHarmonySegs } from "./harmony";
 import { BandItem, bandTop, stackUpperBand } from "./upperband";
 import { GraceAlter, GraceMetrics, GraceNote, graceAdvance, graceBottom, graceGeometry } from "../common/gracenote";
+import type { SourceRef } from "../common/source";
 import * as S from "../score/score";
 
 function getOrNull<T>(arr: T[], i: number): T | null {
@@ -34,6 +35,18 @@ export class PageItem {
   matrix: Matrix33 = newMatrix();
   classes = new Set<string>();
   data: unknown = null;
+  /** 这个图元对应原文里的哪一段（谱面点选定位；见 `docs/实现/谱面就地编辑.md`）。
+   *  挂在**该被整体点中的那一层**上：音符挂在 entry 组上（连着八度点/减时线一起），
+   *  歌词、标题、署名各挂在自己的 TextFrame 上。铺页时由 App 照它给 `<g>` 打
+   *  `data-src-*`，命中与光标联动都读那两个属性——两种格式、两个方向共用这一条路。 */
+  source: SourceRef | null = null;
+  /** 同一个图元的**窄区间**：点选与就地编辑落在这一段上。
+   *
+   *  音符两套区间是**故意的**：命中与光标联动要宽的（整个词素——光标停在 `7,__` 的任何一格
+   *  上都该点亮这个音符），而点选与改写要窄的（只有数字那一格——用户点的是那个数字，
+   *  改它不该连带把 `_` 减时线、`,` 八度逗号一起换掉）。没有窄区间的（歌词/标题/小节线）
+   *  两头都用 `source`。 */
+  editSource: SourceRef | null = null;
   _selected = false;
   selectable = false;
 
@@ -1101,6 +1114,9 @@ export class NoteEntry extends Entry {
       lit.compress = options.punctCompress;
       lit.text = text;
       lit.color = options.color;
+      // 点选定位：这个字在原文里的位置。**span 指的是原文那一段**，与 `text` 可能不同
+      // （`ignoreVerseNumber` 会把显示的段号剥掉），就地改写时要按原文那一段换。
+      lit.source = l.source;
       lit.update();
       lit.x = it.left - lit.left;
       ent.add(lit);
@@ -1295,6 +1311,11 @@ export class NoteEntry extends Entry {
     ent.beams = ch.beams;
     ent.chord = ch;
     ent.verse = lrc;
+    // 点选定位挂在 **entry 组**上（数字、八度点、减时线一起被点中）。增时线撑出来的
+    // 后几个 entry 也挂同一段原文——它们本来就是同一个音符的一部分。
+    // `editSource` 是其中**数字那一格**：点选与就地编辑只落在它上面（见 PageItem.editSource）。
+    ent.group.source = ch.source;
+    ent.group.editSource = ch.pitchSource;
     let it = new JpNumber();
     it.color = options.color;
     it.text = ch.notes[0].number;
@@ -1313,6 +1334,8 @@ export class NoteEntry extends Entry {
       ent = new NoteEntry();
       ent.chord = ch;
       ent.verse = lrc;
+      ent.group.source = ch.source;
+      ent.group.editSource = ch.pitchSource;
       const num = ch.rest ? "0" : "-";
       it = new JpNumber();
       it.text = num;
@@ -3365,6 +3388,24 @@ export class Line {
     }
     let hasBarline = limit >= 0; // 截断的小节尾不补小节线（下一段接着唱同一小节）
     let taken = 0;
+    // **线型与反复要同时认两种表示**：MusicXML 进来的记在小节上（`m.barline` /
+    // `m.repeatBackward`，见 score/musicxml.ts::parseBarline），`.jpwabc` 进来的**只**记在
+    // 条目上（`BarlineEntry.style` / `.repeat`，见 score/jpwimport.ts；那条路 `m.barline`
+    // 恒为 null、`m.repeatBackward` 恒为 false）。只认小节那一份的话，手写或打开的
+    // `.jpwabc` 里 `|:` `:|` `|]` `||` `[|]` 全画成一根普通小节线——反复记号在谱面上整个消失。
+    // 导出那一端早就为此打过同样的补丁（`musicxmlout.ts::effectiveBarline` 一族）。
+    //
+    // 判据照那边：**条目自己的线型只在它排在最后一个音符之后时才作数**——导入端对
+    // `location="left"` 也会 push 一个条目（排在小节开头），那是左端的线，已由上面那支画过。
+    // `repeat` 则两处都认：MusicXML 那条路压根不给条目设 `repeat`（恒 null），所以这一条
+    // 对它是恒等变换，只对 `.jpwabc` 生效——**曲子一上来就是 `|:` 的那种**正落在小节开头，
+    // 靠它才画得出来。
+    const trailingBars = new Set<S.BarlineEntry>();
+    for (let i = m.entries.length - 1; i >= 0; i--) {
+      const e = m.entries[i];
+      if (e instanceof S.Chord) break;
+      if (e instanceof S.BarlineEntry) trailingBars.add(e);
+    }
     for (const ch of m.entries) {
       if (limit >= 0 && taken >= limit) break;
       if (ch instanceof S.LineBreak) {
@@ -3380,7 +3421,12 @@ export class Line {
         NoteEntry.fromChord(this.entries, ch, lrc, options);
         taken++;
       } else if (ch instanceof S.BarlineEntry) {
-        const ent = new Barline(final, options, { style: m.barline, repeatBackward: m.repeatBackward });
+        const ent = new Barline(final, options, {
+          style: (trailingBars.has(ch) ? ch.style : null) ?? m.barline,
+          repeatBackward: m.repeatBackward || ch.repeat === "backward",
+          repeatForward: ch.repeat === "forward",
+        });
+        ent.group.source = ch.source; // 谱面点选定位
         ent.update();
         this.entries.push(ent);
         hasBarline = true;

@@ -455,6 +455,31 @@ button:focus-visible, select:focus-visible {
 .score-page g.selected [stroke] { stroke: #1565ff; }
 .score-page g.selected { cursor: pointer; }
 .score-page text, .score-page path, .score-page line { cursor: default; }
+/* 谱面点选定位：能点回源码的音符（文本谱那一路靠 data-src-*，见
+   docs/实现/谱面就地编辑.md）。要连子元素一起写——上一行把 text/path/line 压成 default 了。 */
+.score-page g[data-src-from],
+.score-page g[data-src-from] text,
+.score-page g[data-src-from] path,
+.score-page g[data-src-from] line { cursor: pointer; }
+
+/* 就地编辑：双击谱面上的字，原地贴一个输入框（editor/inlineedit.ts）。
+   贴在 .score-page-wrap 里（那个是 position: relative 的），坐标由脚本算。 */
+.inline-edit {
+  position: absolute;
+  z-index: 5;
+  box-sizing: content-box;
+  padding: 1px 4px;
+  margin: -2px 0 0 -5px; /* 抵掉边框与内边距，字尽量压在原位上 */
+  border: 2px solid #1565ff;
+  border-radius: 3px;
+  background: #fff;
+  color: #111;
+  font-family: inherit;
+  line-height: 1.1;
+  outline: none;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+}
+.inline-edit.bad { border-color: #e03131; background: #fff5f5; }
 
 /* playback cursor — highlight the currently sounding note */
 .score-page g.playing [fill]:not([fill="none"]) { fill: #e8590c; }

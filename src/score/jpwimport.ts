@@ -27,6 +27,7 @@ import {
   RepeatSpec,
   Score,
   Time,
+  type SourceRef,
 } from "./score";
 import { applyJpPitch, type JpKeyState } from "./jppitch";
 
@@ -43,6 +44,21 @@ class JpState implements JpKeyState {
 
 function unescape(str: string): string {
   return str.replace(/\\n/g, "\n");
+}
+
+/** Note 词素里**音高那一格**的下标。词素里数字不止一个：倚音 `{6,}`、三连音 `{(3}`、
+ *  控制选项 `{C:0}` 里都有，它们一律在花括号里，所以按花括号深度跳过；
+ *  剩下第一个 `0-7`（或节奏音符 `x`/`X`）就是主音。找不到给 -1。 */
+function pitchIndex(tok: string): number {
+  let depth = 0;
+  for (let i = 0; i < tok.length; i++) {
+    const c = tok[i];
+    if (c === "{") { depth++; continue; }
+    if (c === "}") { if (depth > 0) depth--; continue; }
+    if (depth > 0) continue;
+    if ((c >= "0" && c <= "7") || c === "x" || c === "X") return i;
+  }
+  return -1;
 }
 
 function makeChord(note: NoteContext, mea: Measure, stat: JpState): Chord {
@@ -182,6 +198,27 @@ function updateTimeInf(p: Part): void {
 function makePart(sec: VoiceSection, key: Key, ts: Time): Part {
   const res = new Part();
   const data = sec.voiceData;
+  // note 词素 → 文档里的行列。ANTLR 的 `line` 是**段内** 1 基行号，经 `sec.lineNos` 换回
+  // 文档行号（那份账的由来见 jpwfile.ts::Section.lineNos）；列号经 `sec.origColumn` 换回
+  // 原文列号——演奏记号的简写（`{yy}` → `{YanYin}`）是在交给词法器之前展开的，
+  // 展开处之后的列号都往后挪了（见 jpword/alias.ts）。没有简写时那是个恒等换算。
+  // 长度按首尾两端各换算一遍之差算，不按 `text.length` 算：词素里若含简写，
+  // 原文里的那一段比展开后的短。
+  const srcOf = (t: { line: number; column: number; start: number; stop: number }): SourceRef | null => {
+    const docLine = sec.lineNos[t.line - 1];
+    if (docLine === undefined) return null;
+    const column = sec.origColumn(t.line - 1, t.column);
+    const end = sec.origColumn(t.line - 1, t.column + (t.stop - t.start + 1));
+    return { line: docLine, column, length: end - column };
+  };
+  /** 同上，但只框住**数字那一格**：点选与就地编辑落在这一段上，改音高不连带动
+   *  减时线/八度逗号/弧线（见 `score.ts::Chord.pitchSource`）。 */
+  const pitchSrcOf = (t: { line: number; column: number }, text: string): SourceRef | null => {
+    const idx = pitchIndex(text);
+    const docLine = sec.lineNos[t.line - 1];
+    if (idx < 0 || docLine === undefined) return null;
+    return { line: docLine, column: sec.origColumn(t.line - 1, t.column + idx), length: 1 };
+  };
   let mea: Measure | null = null;
   let newMeasure = false;
   const slurOpen: Chord[] = []; // 已开未闭的弧（栈：后开先闭，容嵌套的两条）
@@ -224,6 +261,8 @@ function makePart(sec: VoiceSection, key: Key, ts: Time): Part {
         }
       }
       const chord = makeChord(noteCtx, mea, stat);
+      chord.source = srcOf(noteCtx.Note().symbol);
+      chord.pitchSource = pitchSrcOf(noteCtx.Note().symbol, noteCtx.Note().getText());
       const nt = chord.notes[0];
       if (nt.tupletEnd || nt.tupletBegin) tupNotes.push(nt);
       // 收在前、起在后：同一个音符上「收上一条、再起下一条」是常见写法。
@@ -246,6 +285,7 @@ function makePart(sec: VoiceSection, key: Key, ts: Time): Part {
         newMeasure = false;
       }
       const ent = new BarlineEntry(mea);
+      ent.source = srcOf(barlineCtx.Barline().symbol); // 谱面点选定位
       const txt = barlineCtx.Barline().getText();
       switch (txt) {
         case "|": ent.style = BarStyle.REGULAR; break;
@@ -304,11 +344,17 @@ export function fromJpw(f: JpwFile): Score | null {
   const res = new Score();
   const title = f.getTitle();
   res.title = unescape(title?.title ?? "");
+  res.titleSource = title?.valueSpans.get("title") ?? null; // 点选定位
+  res.keyMeterSource = title?.valueSpans.get("keyandmeters") ?? null;
+  // 纸顶那块调号拍号照源码印不印：`KeyAndMeters` 没写、或值被删空 → 不印
+  // （那块的内容取自第一小节，源码删干净了它也照样画，就成了「删不掉」）。
+  res.showKeyMeter = (title?.keyAndMeters ?? null) !== null;
   const key = title?.key ?? "C";
   const author = title?.wordsMusicBy ?? null;
   if (author !== null) {
     const cred = new Credit();
     cred.text = unescape(author);
+    cred.source = title?.valueSpans.get("wordsbyandmusicby") ?? null;
     // page 是 0 基的页号（MusicXML 导入端也是 attr−1）。原先写 1 与 jpscore.ts 只收 page===0
     // 的判据对不上，`.jpwabc → Score → .jpwabc` 的作者行会整条丢掉，导出的 MusicXML 里
     // 词曲也会落到第 2 页。
@@ -386,6 +432,7 @@ function assignLrcSeg(part: Part, seg: WordsSegment): void {
       lrc.number = pass;
       if (it.text.length > 0) {
         lrc.text = it.text;
+        lrc.source = it.source; // 谱面点选定位（docs/实现/谱面就地编辑.md）
         notes[idx].lyrics.push(lrc);
       }
     }

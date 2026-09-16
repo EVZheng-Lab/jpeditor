@@ -29,6 +29,7 @@ import {
   type ScoreLine,
   type ScorePage,
   type SourceSpan,
+  type HeaderSpanKey,
   type SustainElement,
   type TextLine,
   type VoiceGroup,
@@ -877,18 +878,28 @@ function parseShigeKeyLine(meta: Metadata, value: string, tonic = "1"): void {
   }
 }
 
+/** `column` 是**值**在行内的起始列（`B: ` 之后），既用于诊断落点，也用于
+ *  头部文字的谱面点选定位（见 docs/实现/谱面就地编辑.md）。
+ *  从前调用方一律传 0，于是 `bad-mode` 这类报警都画在行首。 */
 function applyMetadata(ctx: Ctx, meta: Metadata, key: string, value: string, column: number): void {
   const v = value.trim();
+  // 值前后可能有空白，区间要掐到实际内容上
+  const vSpan = (): SourceSpan => span(ctx, column + (value.length - value.trimStart().length), v.length);
+  /** 收一条会排到纸上的头部文字：内容与区间**逐项对应**地各进各的数组。 */
+  const put = (k: HeaderSpanKey): void => {
+    (meta[k] as string[]).push(v);
+    meta.headerSpans[k].push(vSpan());
+  };
   switch (key.toUpperCase()) {
     case "V":
       meta.version = v;
       break;
     case "B":
     case "T":
-      meta.titles.push(v);
+      put("titles");
       break;
     case "Z":
-      meta.authors.push(v);
+      put("authors");
       break;
     case "D": {
       if (!/^(?:[A-G][#$b♭♯]?|[#$b♭♯][A-G])$/.test(v)) {
@@ -925,11 +936,11 @@ function applyMetadata(ctx: Ctx, meta: Metadata, key: string, value: string, col
     }
     case "XL": meta.indexLeft = v; break;
     case "XR": meta.indexRight = v; break;
-    case "TL": meta.topLeft.push(v); break;
-    case "TR": meta.topRight.push(v); break;
-    case "BL": meta.bottomLeft.push(v); break;
-    case "BC": meta.bottomCenter.push(v); break;
-    case "BR": meta.bottomRight.push(v); break;
+    case "TL": put("topLeft"); break;
+    case "TR": put("topRight"); break;
+    case "BL": put("bottomLeft"); break;
+    case "BC": put("bottomCenter"); break;
+    case "BR": put("bottomRight"); break;
     case "FONTSIZE": meta.fontSizes.push(v); break;
     case "MARGIN": meta.margins.push(v); break;
     case "SPACE":
@@ -1166,7 +1177,7 @@ export function parsePu(text: string, options: ParseOptions = {}): PuDoc {
 
     const meta = META_PREFIX.exec(raw);
     if (meta && METADATA_KEYS.has(meta[1]!.toUpperCase())) {
-      applyMetadata(ctx, metadata, meta[1]!, raw.slice(meta[0].length), 0);
+      applyMetadata(ctx, metadata, meta[1]!, raw.slice(meta[0].length), meta[0].length);
       continue;
     }
 

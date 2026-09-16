@@ -15,6 +15,7 @@ import {
   SmuflText,
 } from "./layout";
 import { Chord, MusicCommon, Score } from "../score/score";
+import type { SourceRef } from "../common/source";
 import { jpTimeSigItems } from "./jpglyph";
 import type { PagePainter } from "./pagepainter";
 import { walkPageItem, type ItemVisitor } from "./walk";
@@ -115,6 +116,8 @@ export abstract class ScorePainter implements PagePainter {
     let titleCount = 0;
     const texts: string[] = [];
     const fonts: Font[] = [];
+    // 点选定位用：与 texts 逐项对应的源码区间（`.jpwabc` 那条路才有）。
+    const srcs: (SourceRef | null)[] = [];
     for (const it of this.score.credit) {
       const isTitle = it.type === "title";
       const sz = isTitle ? opt.titleSize : opt.creditSize;
@@ -122,9 +125,11 @@ export abstract class ScorePainter implements PagePainter {
         titleCount++;
         texts.unshift(it.text);
         fonts.unshift(fnt.makeWithSize(sz));
+        srcs.unshift(it.source);
       } else {
         texts.push(it.text);
         fonts.push(fnt.makeWithSize(sz));
+        srcs.push(it.source);
       }
     }
     if (titleCount === 0) {
@@ -132,6 +137,7 @@ export abstract class ScorePainter implements PagePainter {
         titleCount = 1;
         texts.unshift(this.score.title);
         fonts.unshift(fnt.makeWithSize(opt.titleSize));
+        srcs.unshift(this.score.titleSource);
       }
     }
     if (titleCount !== 1) console.error("title count error!");
@@ -140,6 +146,7 @@ export abstract class ScorePainter implements PagePainter {
       const font = fonts[idx];
       const obj = this.multipleLineText(text, font, w, opt.color);
       obj.y = ypos;
+      obj.source = srcs[idx] ?? null;
       obj.update();
       pg.add(obj);
       ypos += obj.height;
@@ -335,17 +342,22 @@ export class JinpuPainter extends ScorePainter {
 
   /** 词曲署名拆成逐行的文本：一个字段里可能写了好几行（Finale 导出的样子），
    *  没带「作词：」这类标签的按 `type` 补一个（scripts/rebuild.mjs::decorateSong 同一份规则）。 */
-  private creditLines(): string[] {
+  private creditLines(): { text: string; source: SourceRef | null }[] {
     const LABEL: Record<string, string> = {
       lyricist: "作词", poet: "作词", composer: "作曲", arranger: "编曲",
     };
-    const out: string[] = [];
+    const out: { text: string; source: SourceRef | null }[] = [];
     for (const c of this.score.credit) {
       if (c.type === "title") continue;
       for (const raw of c.text.split(/\r?\n/)) {
         const t = raw.trim();
         if (!t) continue;
-        out.push(/[:：]/.test(t) || !c.type ? t : `${LABEL[c.type] ?? c.type}：${t}`);
+        // 一条 Credit 可能拆成好几行（`.jpwabc` 的 `\n` 转义），**源码区间是同一段**
+        // ——原文里它本来就是一行，点哪一行都该选中整条。
+        out.push({
+          text: /[:：]/.test(t) || !c.type ? t : `${LABEL[c.type] ?? c.type}：${t}`,
+          source: c.source,
+        });
       }
     }
     return out;
@@ -371,19 +383,23 @@ export class JinpuPainter extends ScorePainter {
     const right = w - opt.marginRight;
 
     // 标题：居中（可多行），与 titlePage 同一份内容
-    const titles: string[] = [];
-    for (const it of this.score.credit) if (it.type === "title") titles.push(it.text);
-    if (titles.length === 0 && this.score.title.trim().length > 0) titles.push(this.score.title);
+    const titles: { text: string; source: SourceRef | null }[] = [];
+    for (const it of this.score.credit) {
+      if (it.type === "title") titles.push({ text: it.text, source: it.source });
+    }
+    if (titles.length === 0 && this.score.title.trim().length > 0) {
+      titles.push({ text: this.score.title, source: this.score.titleSource });
+    }
 
     const credits = this.creditLines();
     // **窄纸要缩排**：标题与署名的字号是照长图那张 1000 宽的纸定的，换到 A4/A5 就装不下
     //（署名是右对齐的，量出来比版心还长时 x 直接成负数，整块探到纸外去——
     // 基督更美在 A4 上曾左溢 294pt、整块比纸还宽 244pt）。按最宽的那一行整块等比缩，
     // **够宽时 k = 1、一点不动**，所以长图那一档的观感分毫不变。
-    const headScale = (size: number, lines: readonly string[]): number => {
+    const headScale = (size: number, lines: readonly { text: string }[]): number => {
       const f = fnt.makeWithSize(size);
       let need = 0;
-      for (const t of lines) for (const one of t.split("\n")) need = Math.max(need, f.measureText(one));
+      for (const t of lines) for (const one of t.text.split("\n")) need = Math.max(need, f.measureText(one));
       return need > 0 ? need : 0;
     };
     const avail = Math.max(1, right - left);
@@ -394,8 +410,9 @@ export class JinpuPainter extends ScorePainter {
 
     let ypos = 0;
     for (const t of titles) {
-      const obj = this.multipleLineText(t, fnt.makeWithSize(titleSize), w, opt.color);
+      const obj = this.multipleLineText(t.text, fnt.makeWithSize(titleSize), w, opt.color);
       obj.y = ypos;
+      obj.source = t.source;
       obj.update();
       pg.add(obj);
       ypos += obj.height;
@@ -410,7 +427,8 @@ export class JinpuPainter extends ScorePainter {
       const tf = new TextFrame();
       tf.font = cf;
       tf.color = opt.color;
-      tf.text = t;
+      tf.text = t.text;
+      tf.source = t.source;
       tf.y = base + i * gap;
       tf.x = right - tf.measureText();
       pg.add(tf);
@@ -432,9 +450,13 @@ export class JinpuPainter extends ScorePainter {
    */
   private keyMeter(x: number, baseline: number): Group | null {
     const opt = this.layout.options;
+    // 源码里没写调号拍号就不印（`Score.showKeyMeter`）。内容取自第一小节，与源码写没写无关，
+    // 所以不看这个标志的话，`KeyAndMeters` 删掉之后谱面上仍会画一个凭空的 `1=C 4/4`。
+    if (!this.score.showKeyMeter) return null;
     const m0 = this.score.parts[0]?.measures[0];
     if (!m0) return null;
     const g = new Group();
+    g.source = this.score.keyMeterSource; // 谱面点选定位（`.Title` 的 KeyAndMeters）
     // 升降号写在音名**之前**（`MusicCommon.keys` 就是这个写法，成书亦然：`♭B` / `#F`），
     // 与曲中的「转1=Bb」不同——那一处是既有观感，不在这里改。
     const name = MusicCommon.keys[m0.key.fifths + 7] ?? "C";

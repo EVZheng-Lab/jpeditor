@@ -2,7 +2,7 @@
 // Mirrors EditorController in CodeEditor.kt (doBind/tryLoad/updateLayout/paint/load/doSave).
 
 import { EditorView, keymap, lineNumbers } from "@codemirror/view";
-import { Compartment, EditorState } from "@codemirror/state";
+import { Compartment, EditorSelection, EditorState } from "@codemirror/state";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { jpwHighlighter } from "./highlight";
 import { puHighlighter } from "../pu/highlight";
@@ -13,6 +13,7 @@ import type { NoteElement as PuNoteElement, PuDoc } from "../pu";
 import type { PuUserOptions } from "../pu/metrics";
 import { ExpandedPainter, type ExpandedOptions } from "../jianpu/expanded";
 import { JpwFile, LayoutSection } from "../jpword/jpwfile";
+import { countVoiceSyntaxErrors } from "../jpword/parse";
 import { fromJpw } from "../score/jpwimport";
 import { JinpuPainter } from "../layout/painter";
 import { PPTX_PAGE, type JpProfileName } from "../layout/pptxstyle";
@@ -30,11 +31,16 @@ import { DOC_EXT, acceptAttr, isPuFile } from "../common/filetypes";
 import { MixedPainter } from "../mixed/painter";
 import { PlaybackController, type PlaybackHost } from "./playback";
 import { OmrController, type OmrHost } from "./omrctl";
+import { InlineEditor, editRangeOf } from "./inlineedit";
+import type { SourceRef } from "../common/source";
 import type { JianpuLayoutMode } from "../jianpu/profile";
 import {
   loadPersistedSettings, savePersistedSettings, loadLastFile, saveLastFile, clearLastFile,
 } from "./settings";
 export type { OmrFormat } from "../omr";
+
+/** 原样档点中一个字之后的提示。就地编辑没有别的入口，不说一句没人会去双击。 */
+const EDIT_HINT = "　（双击可就地编辑）";
 
 /** 两档字号的出厂值（= 老版展开档的那三个，见 layout/pptxstyle.ts::PPTX_PAGE）。 */
 const JP_SIZE_DEFAULTS = {
@@ -140,6 +146,12 @@ export class App implements OmrHost, PlaybackHost {
   private _phraseText: string | null = null;
   private _hanziBtnEl: HTMLButtonElement | null = null;
   private _readOnlyCompartment = new Compartment();
+  /** 谱面点选正在自己改编辑器的 selection，别让 selection 变化再回头动谱面
+   *  （见 docs/实现/谱面就地编辑.md 的「防回环」）。 */
+  private _syncingPick = false;
+  /** 谱面上的就地编辑（双击一个字原地改），见 editor/inlineedit.ts。
+   *  App 自己就是它的宿主：要的三样（`view` / `validate` / `setStatus`）本来就在。 */
+  private _inlineEdit = new InlineEditor(this);
   // render settings (app-level, not part of the .jpwabc document)
   pageW = 960;
   pageH = 540;
@@ -467,7 +479,9 @@ export class App implements OmrHost, PlaybackHost {
         // 识别映射随用户编辑迁移偏移，保持点选仍落在正确 token。
         this.omr.remapMeta((m) => mapMeta(m, u.changes));
         this.scheduleReload();
+        return; // 重排是延时的，此刻的谱面还是旧的；高亮由重排末尾那一次负责
       }
+      if (u.selectionSet && !this._syncingPick) this._syncScoreToCursor();
     });
     this.view = new EditorView({
       parent,
@@ -514,7 +528,12 @@ export class App implements OmrHost, PlaybackHost {
     this.debounceTimer = setTimeout(() => this.reload(this.getText()), 200);
   }
 
-  /** parse -> import -> layout -> render. Returns false on parse failure (text kept). */
+  /** parse -> import -> layout -> render. Returns false on parse failure (text kept).
+   *
+   *  **失败要出声**（`_reloadFailed`）：右边留着上一版谱面是对的（别把用户的活儿刷白），
+   *  但从前是一声不响地留着，改了源码谱面不动就成了「删不掉 / 改了没反应」，
+   *  真正的原因（某一行解析不了）只有控制台看得见。文本谱那条 `reloadPu` 本来就报，
+   *  这条跟上。 */
   reload(text: string): boolean {
     // 混排/识别模式：谱面区显示各自专属视图，编辑文本不重排冲掉它。
     if (this.mode !== "jp") return true;
@@ -522,30 +541,55 @@ export class App implements OmrHost, PlaybackHost {
     let f: JpwFile | null;
     try {
       f = JpwFile.fromString(text);
-    } catch {
-      return false;
+    } catch (e) {
+      return this._reloadFailed("解析", e);
     }
-    if (!f) return false;
+    if (!f) return this._reloadFailed("解析", null);
     let score;
     try {
       score = fromJpw(f);
     } catch (e) {
-      console.error("import failed", e);
-      return false;
+      return this._reloadFailed("导入", e);
     }
-    if (!score) return false;
+    if (!score) return this._reloadFailed("导入", null);
+
+    // 乐句排版：**手改过的文本就是新的「原样」基准**（口径与 reloadPu 那段一字不差）。
+    // 在乐句档里动了一个字就退出乐句档（按钮弹回「原样」），此后按「按乐句重排」
+    // 会照改过的这份重排、按「原样」回到改过的这份——否则一按按钮就把手改抹了。
+    if (this._origLayoutText !== null) {
+      if (this._phraseOn && text !== this._phraseText) {
+        this._phraseOn = false;
+        this._setPhraseActive(false);
+      }
+      if (!this._phraseOn) this._origLayoutText = text;
+    }
 
     const breakDesc = f.getSection(LayoutSection)?.desc ?? null;
     this._breakDesc = breakDesc; // 导出 PPTX 时另排一遍要用同一份分页描述
     try {
       this._layoutScore(score, breakDesc);
     } catch (e) {
-      console.error("layout failed", e);
-      return false;
+      return this._reloadFailed("排版", e);
     }
     this.renderPages();
     this.playback.refreshSpeedUi(); // 谱面 ♩= 随文本走，速度提示要跟着换
+    // 上一拍报过错，这一拍排出来了 → 把那句收掉（文本谱那条也是排成了就清）
+    if (this._reloadBad) {
+      this._reloadBad = false;
+      this.setStatus("");
+    }
     return true;
+  }
+
+  /** 上一次 `reload` 是不是失败的（状态栏上还挂着那句话）。 */
+  private _reloadBad = false;
+
+  /** 重排没成：谱面留着上一版，但要说一句——否则「源码改了、谱面没动」无从解释。 */
+  private _reloadFailed(step: string, e: unknown): false {
+    console.error(`${step}失败`, e);
+    this._reloadBad = true;
+    this.setStatus(`${step}失败，右边仍是上一版谱面${e instanceof Error ? "：" + e.message : ""}`);
+    return false;
   }
 
 
@@ -621,7 +665,13 @@ export class App implements OmrHost, PlaybackHost {
         const { w, h } = painter.pageSize(i);
         return `${w} / ${h}`;
       },
+      onPage: (svg, _wrap, i) => {
+        this._tagSources(painter.layout.pages[i], painter.nodeMap);
+        svg.addEventListener("click", (e) => this.onPuPageClick(e));
+        svg.addEventListener("dblclick", (e) => this.onPageDblClick(e));
+      },
     });
+    this._syncScoreToCursor(); // 重排把整棵 SVG 换掉了，高亮要照当前光标重上
   }
 
   /** 文本谱版面切换（原版 / PPT）。 */
@@ -767,40 +817,199 @@ export class App implements OmrHost, PlaybackHost {
         const { w, h } = this.painter.pageSize(i);
         return `${w} / ${h}`;
       },
-      onPage: (svg, _wrap, i) => svg.addEventListener("click", (e) => this.onPageClick(i, svg, e)),
+      onPage: (svg, _wrap, i) => {
+        this._tagSources(this.painter.layout.pages[i], this.painter.nodeMap);
+        svg.addEventListener("click", (e) => this.onPageClick(i, svg, e));
+        svg.addEventListener("dblclick", (e) => this.onPageDblClick(e));
+      },
     });
+    this._syncScoreToCursor(); // 同 renderPuPages：重排后照当前光标把高亮重上
   }
 
   // ---------------- picking / selection ----------------
+  //
+  // 谱面 ↔ 源码的联动**两种格式、两个方向共用一条路**：排版器把源码区间挂在
+  // `PageItem.source` 上（音符挂在 entry 组、歌词/标题/署名各挂自己的 TextFrame），
+  // 铺页后由 `_tagSources` 走一遍页面树，给对应的 `<g>` 打上 `data-src-from/to`
+  // （**偏移在这里现算**：模型里记的是行列，见 `common/source.ts`）。
+  // 于是命中 = `ev.target.closest("[data-src-from]")`、反查 = 扫这些属性，
+  // 不必分格式、也不必给 `PuPainter` 补一套几何 pick。详见 `docs/实现/谱面就地编辑.md`。
   private onPageClick(pageIndex: number, svg: SVGSVGElement, ev: MouseEvent): void {
+    this.deselect();
+    // **源码定位与高亮一律走 DOM 上的 `data-src-*`**（与文本谱同一条路），
+    // 不搭几何 pick 的车：entry 组的包围盒含着它底下的歌词，盒心常落在数字与歌词之间的
+    // 空档上，`pickPage` 在那儿是落空的——挂在 pick 后面的话，点音符十次有三次没反应。
+    // 几何 pick 留着只为两件它独有的事：记住「从这里开始试听」的和弦、状态栏那行描述。
+    const revealed = this.layoutMode === "original" && this._revealFrom(ev.target as Element | null);
     const ctm = svg.getScreenCTM();
     if (!ctm) return;
     const pt = new DOMPoint(ev.clientX, ev.clientY).matrixTransform(ctm.inverse());
     const picked = this.painter.pickPage(pageIndex, new Point(pt.x, pt.y));
-    this.deselect();
     if (!picked) {
-      this.setStatus("");
+      if (!revealed) this.setStatus("");
       return;
     }
     const target = picked.selectable ? picked : this.painter.entryGroupOf(picked);
-    const el = this.painter.nodeMap.get(target);
-    if (el) {
-      el.classList.add("selected");
-      this.selectedEl = el;
-    }
+    if (!revealed) this._selectScoreEl(this.painter.nodeMap.get(target) ?? null);
     // Remember the note entry so playback can start from here.
-    const d = target.data;
+    //
+    // **和弦要从 entry 组上取，不能从 `target` 取**：`data` 是挂在组上的
+    // （`layout.ts::NoteEntry` 的 `this.group.data = this`），而命中的多半是组里那个
+    // `JpNumber`——它自己 `selectable`，于是 `target` 就停在它身上、`data` 是 undefined。
+    // 从前这里读的是 `target.data`，点音符数字时整个分支都不进（`_selectedChord` 没设上，
+    // 「从这里开始试听」只在点到非 selectable 的子元素时才生效）。
+    const d = this.painter.entryGroupOf(picked).data;
     if (d && typeof (d as { verse?: unknown }).verse === "number" && (d as { chord?: unknown }).chord) {
       const ne = d as { chord: import("../score/score").Chord; verse: number };
       this._selectedChord = ne.chord;
       this._selectedVerse = ne.verse;
     }
-    this.setStatus(describePick(picked));
+    this.setStatus(describePick(picked) + (revealed ? EDIT_HINT : ""));
+  }
+
+  /** 文本谱谱面点选：`PuPainter` 没有几何 pick，直接读 DOM 上的 `data-src-*`。 */
+  private onPuPageClick(ev: MouseEvent): void {
+    if (this._revealFrom(ev.target as Element | null)) this.setStatus(EDIT_HINT.trim());
+  }
+
+  /** 从命中的 DOM 节点往上找最近的带源码区间的祖先，选中它对应的那段原文。
+   *  **选中的是窄区间**（音符只选数字那一格，见 `editRangeOf`）：用户点的是那个数字，
+   *  连着减时线一起选中的话，接着改音高就把 `_` 一并换掉了。返回有没有找着。 */
+  private _revealFrom(target: Element | null): boolean {
+    const g = target?.closest?.("[data-src-from]") as SVGGElement | null;
+    if (!g) return false;
+    const r = editRangeOf(g);
+    if (!r) return false;
+    this._selectCode(r.from, r.to);
+    return true;
+  }
+
+  /** 谱面双击 → 就地编辑（只在原样档；展开档指不回唯一一段原文）。 */
+  private onPageDblClick(ev: MouseEvent): void {
+    if (this.layoutMode !== "original") return;
+    const g = (ev.target as Element | null)?.closest?.("[data-src-from]") as SVGGElement | null;
+    if (!g) return;
+    ev.preventDefault();
+    this._inlineEdit.open(g);
+  }
+
+  /** `InlineEditHost`：这次改动会不会把谱改坏。
+   *
+   *  判据是**比较**不是归零：拿改动前后各量一遍，**变差了才拦**。存量谱面里本来就有
+   *  靠解析器的错误恢复才过的写法（文本谱也常带几条诊断），一刀切要求"零错误"会把
+   *  合法的改动一起挡在外面。
+   *
+   *  只看 `JpwFile.fromString` 是不够的——`@` `{` `abc` 塞进 `.Voice` 它照样返回非 null，
+   *  音符却已经悄悄没了；真正看得出来的是语法错误计数（`countVoiceSyntaxErrors`）。 */
+  validate(text: string): boolean {
+    try {
+      if (this.docFormat === "pu") {
+        const next = parsePu(text);
+        if (next.songs.length === 0) return false;
+        return next.diagnostics.length <= parsePu(this.getText()).diagnostics.length;
+      }
+      const f = JpwFile.fromString(text);
+      if (f === null || fromJpw(f) === null) return false;
+      return this._voiceErrors(text) <= this._voiceErrors(this.getText());
+    } catch {
+      return false;
+    }
+  }
+
+  /** `.Voice` 段的语法错误数（解析不出段落就按「无穷大」算，交给上面那条比较）。 */
+  private _voiceErrors(text: string): number {
+    const voice = JpwFile.fromString(text)?.getVoice();
+    return voice ? countVoiceSyntaxErrors(voice.lines.join("\n")) : Number.MAX_SAFE_INTEGER;
+  }
+
+  /** 走一遍这一页的页面树，把带 `source` 的图元在 DOM 上标出来。
+   *  **要在 `renderPage` 之后调**——`nodeMap` 是渲染时才填的。
+   *
+   *  两套属性：`data-src-*` 是宽区间（整个词素，命中与光标联动用），
+   *  `data-src-edit-*` 是窄区间（音符只有数字那一格，点选与就地编辑用，
+   *  见 `layout.ts::PageItem.editSource`）。没有窄的就只打前一套。 */
+  private _tagSources(root: PageItem | undefined, nodeMap: WeakMap<PageItem, SVGGElement>): void {
+    if (!root || !this.view) return;
+    const doc = this.view.state.doc;
+    const put = (el: SVGGElement, s: SourceRef, a: string, b: string): void => {
+      if (s.line < 0 || s.line >= doc.lines) return;
+      const l = doc.line(s.line + 1);
+      const from = Math.min(l.from + s.column, l.to);
+      el.setAttribute(a, String(from));
+      el.setAttribute(b, String(Math.min(from + s.length, l.to)));
+    };
+    const visit = (it: PageItem): void => {
+      const s = it.source;
+      if (s && s.line >= 0 && s.line < doc.lines) {
+        const el = nodeMap.get(it);
+        if (el) {
+          put(el, s, "data-src-from", "data-src-to");
+          if (it.editSource) put(el, it.editSource, "data-src-edit-from", "data-src-edit-to");
+        }
+      }
+      for (const c of it.children) visit(c);
+    };
+    visit(root);
+  }
+
+  /** 谱面上「当前这个」高亮只有一处，点选与光标联动共用（都走 `.selected`）。 */
+  private _selectScoreEl(el: SVGGElement | null): void {
+    if (this.selectedEl === el) return;
+    this.selectedEl?.classList.remove("selected");
+    this.selectedEl = el;
+    el?.classList.add("selected");
+  }
+
+  /** 选中源码区间并滚过去。口径同 `omrctl.ts::selectCode`（识别核对那一路的点选定位）。 */
+  private _selectCode(from: number, to: number): void {
+    const len = this.view.state.doc.length;
+    const f = Math.max(0, Math.min(from, len));
+    const t = Math.max(f, Math.min(to, len));
+    this._syncingPick = true;
+    try {
+      this.view.dispatch({
+        selection: EditorSelection.single(f, t),
+        effects: EditorView.scrollIntoView(f, { y: "center" }),
+      });
+    } finally {
+      this._syncingPick = false;
+    }
+    this.view.focus();
+    // dispatch 被闸挡住了，谱面那头自己点亮
+    this._syncScoreToCursor();
+  }
+
+  /** 光标 → 谱面：把光标所在的那个对象点亮。重排后也要调一次（SVG 整棵重建了）。
+   *
+   *  **按选区的起点找，不按 `head` 找**：`_selectCode` 选中一个词素时 `head` 落在**末尾**，
+   *  而 `.jpwabc` 里相邻词素之间常常没有空格（`2_1)`、`|1'.`），末尾那一点正是下一个词素的
+   *  起点——按 head 找会点亮**下一个**字，于是「右边高亮的字与左边选中的字对不上」，
+   *  有没有空格决定它犯不犯，看着就是偶发。光标（空选区）时两者相同。 */
+  private _syncScoreToCursor(): void {
+    if (!this.view) return; // 挂编辑器之前也可能先排一次谱
+    if (this.mode !== "jp" || this.layoutMode !== "original") return;
+    this._selectScoreEl(this._elAt(this.view.state.selection.main.from));
+  }
+
+  /** 命中判据：**优先严格落在区间内**，都不中再收「正好停在词素末尾」的那个
+   *  ——相邻词素之间没有空格时（`.jpwabc` 常见），末尾那一点同时属于两边，
+   *  按「光标在谁里面」判才是用户的意思。
+   *
+   *  一个源码区间在谱面上可能对应**好几处**（多段歌词叠排时同一行词只写一遍？不会；
+   *  但增时线撑出来的后几个 entry 挂的是同一段原文），取第一处即可。 */
+  private _elAt(pos: number): SVGGElement | null {
+    let touching: SVGGElement | null = null;
+    for (const g of this.scorePane.querySelectorAll<SVGGElement>("[data-src-from]")) {
+      const from = Number(g.getAttribute("data-src-from"));
+      const to = Number(g.getAttribute("data-src-to"));
+      if (pos >= from && pos < to) return g;
+      if (pos === to) touching ??= g;
+    }
+    return touching;
   }
 
   private deselect(): void {
-    this.selectedEl?.classList.remove("selected");
-    this.selectedEl = null;
+    this._selectScoreEl(null);
     this._selectedChord = null;
     this._selectedVerse = 0;
   }
@@ -1062,13 +1271,22 @@ export class App implements OmrHost, PlaybackHost {
     this._phraseBtnEl?.setAttribute("aria-pressed", String(phrase));
   }
 
-  /** Switch between the imported line layout and phrase-aware relayout. */
+  /**
+   * 「原样 ↔ 按乐句重排」。**重排的依据是编辑器里现在这份文本**，不是导入时那份
+   * ——手改过的音符、弧线、歌词都要带进重排结果里（口径同文本谱那侧的
+   * `_setPuPhraseLayout`：源码是唯一真相，两侧一致）。
+   *
+   * 从前这条读的是 `mixedXmlText`（导入时的 MusicXML），于是「手工补完延音线再点一下
+   * 按乐句重排」会把改动整篇覆盖掉，而且悄无声息。
+   * 走 `.jpwabc` 文本这一圈的代价是：`fromJpw` 装不下的东西（和弦、多声部）会掉——
+   * 但那些**在编辑器文本里本来就已经没有了**，右边谱面也一直是照这份文本排的。
+   */
   setPhraseLayout(phrase: boolean): void {
     if (this.docFormat === "pu") {
       this._setPuPhraseLayout(phrase);
       return;
     }
-    if (!this.mixedXmlText || !this._origLayoutText) return;
+    if (this._origLayoutText === null) return; // 乐句排版没开（没导入过）
     if (this._phraseOn === phrase) return;
     // 乐句排版要看的是排版结果 → 先退出识别/混排叠加视图，回到简谱模式，否则 reload 直接返回不重排。
     this._setMode("jp");
@@ -1076,15 +1294,32 @@ export class App implements OmrHost, PlaybackHost {
       this._phraseOn = false;
       this._setPhraseActive(false);
       this.setText(this._origLayoutText);
-    } else {
-      try {
-        const score = loadMusicXml(this.mixedXmlText);
-        this.setText(scoreToJpwabc(score, { phrase: true, fit: this._phraseFit(score) }));
-        this._phraseOn = true;
-        this._setPhraseActive(true);
-      } catch (e) {
-        console.error("phrase relayout failed", e);
-      }
+      return;
+    }
+    const text = this.getText();
+    let score: Score | null = null;
+    try {
+      const f = JpwFile.fromString(text);
+      score = f === null ? null : fromJpw(f);
+    } catch (e) {
+      console.error("乐句重排前解析失败", e);
+    }
+    if (!score) {
+      this.setStatus("这份谱现在解析不了，没法按乐句重排");
+      return;
+    }
+    try {
+      const out = scoreToJpwabc(score, { phrase: true, fit: this._phraseFit(score) });
+      // 重排前这份就是新的「原样」基准——按「原样」要回到**手改之后**的样子，
+      // 不是导入时的样子（`setText` 触发的那次 reload 认 `_phraseText`，不会把它冲掉）。
+      this._origLayoutText = text;
+      this._phraseText = out;
+      this._phraseOn = true;
+      this._setPhraseActive(true);
+      this.setText(out);
+    } catch (e) {
+      console.error("phrase relayout failed", e);
+      this.setStatus("按乐句重排失败");
     }
   }
 

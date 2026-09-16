@@ -643,7 +643,9 @@ export class PuPainter implements PagePainter {
       const font = new Font(m.fontFamily, size, i === 0);
       const w = font.measureText(title);
       const y = m.titleY + (i === 0 ? 0 : m.titleSize * 0.2 + i * (m.subtitleSize * 1.35));
-      root.add(text(title, centre - w / 2, y, font, INK));
+      const tf = text(title, centre - w / 2, y, font, INK);
+      tf.source = meta.headerSpans.titles[i] ?? null; // 谱面点选定位
+      root.add(tf);
     });
 
     const right = this.pageWidth - m.continuousSideMargin - this._pageShiftX;
@@ -651,18 +653,24 @@ export class PuPainter implements PagePainter {
     // `Z:` 词曲作者靠右；`TL:`/`TR:` 是与标题同高的左右文字块（多行，允许空行占位）
     meta.authors.forEach((a, i) => {
       const w = authorFont.measureText(a);
-      root.add(text(a, right - w, m.authorY + i * m.authorStep, authorFont, INK));
+      const tf = text(a, right - w, m.authorY + i * m.authorStep, authorFont, INK);
+      tf.source = meta.headerSpans.authors[i] ?? null;
+      root.add(tf);
     });
     const topFont = new Font(m.fontFamily, m.topTextSize);
     meta.topLeft.forEach((t, i) => {
       if (!t) return;
       // `TL:` 与 system 左缘对齐（它不是跟着音符走的）
-      root.add(text(t, systemLeft, m.authorY + i * m.authorStep, topFont, INK));
+      const tf = text(t, systemLeft, m.authorY + i * m.authorStep, topFont, INK);
+      tf.source = meta.headerSpans.topLeft[i] ?? null;
+      root.add(tf);
     });
     meta.topRight.forEach((t, i) => {
       if (!t) return;
       const w = topFont.measureText(t);
-      root.add(text(t, right - w, m.authorY + i * m.authorStep, topFont, INK));
+      const tf = text(t, right - w, m.authorY + i * m.authorStep, topFont, INK);
+      tf.source = meta.headerSpans.topRight[i] ?? null;
+      root.add(tf);
     });
 
     // 调号拍号行的基线（左侧文字块之下，或贴着标题空一行，见 keyLineY）
@@ -1072,6 +1080,7 @@ export class PuPainter implements PagePainter {
     this.paintOrnaments(g, note.ornaments, x, baseline, stackTop(note, this.metrics));
 
     root.add(g);
+    g.source = note.source; // 谱面点选定位（docs/实现/谱面就地编辑.md）
     this.noteItems.set(note, { page: pageIndex, item: g });
   }
 
@@ -1356,6 +1365,7 @@ export class PuPainter implements PagePainter {
         rightEdge[verse] = Math.max(rightEdge[verse] ?? 0, x - bodyWidth / 2 + font.run(str).width);
       }
       root.add(g);
+      g.source = syl.source; // 谱面点选定位
       this.syllableItems.set(syl, { page: pageIndex, item: g });
     });
   }
@@ -1364,6 +1374,14 @@ export class PuPainter implements PagePainter {
   renderPage(pageIndex: number): SVGSVGElement {
     return renderPageSvg(this.layout.pages[pageIndex], this.pageWidth, this.pageHeight, this.nodeMap);
   }
+
+  // ---------------- 谱面点选定位 ----------------
+  //
+  // **文本谱这一侧不需要 `pick`**：`PuPainter` 不继承 `ScorePainter`（没有那套 hit-test），
+  // 但它本来就为播放高亮建好了 `noteItems` / `syllableItems` + `nodeMap`，顺着它们把
+  // 源码区间挂到 `PageItem.source` 上即可（`paintNote` / 歌词那两处），命中交给 DOM 自己做
+  // （`ev.target.closest("[data-src-from]")`）。铺页时由 App 统一走页面树打属性——
+  // 两种格式、两个方向共用那一条路，见 `docs/实现/谱面就地编辑.md`。
 
   // ---------------- 播放逐字高亮 ----------------
 

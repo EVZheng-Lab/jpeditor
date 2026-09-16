@@ -69,7 +69,22 @@ export interface Metadata {
   margins: string[];
   /** 其余版面指令原文，如 `Space: qu=10`、`Off: hx;` */
   options: Array<{ key: string; value: string }>;
+  /** 头部那几个**会排到纸上**的多行字段，各自的源码区间，与同名数组**逐项对应**。
+   *  谱面点选定位用（见 docs/实现/谱面就地编辑.md）——排到纸上的字才需要，
+   *  `FontSize:`/`Margin:`/`Space:` 那些是指令、谱面上没有对应的字，故不在此列。 */
+  headerSpans: {
+    titles: SourceSpan[];
+    authors: SourceSpan[];
+    topLeft: SourceSpan[];
+    topRight: SourceSpan[];
+    bottomLeft: SourceSpan[];
+    bottomCenter: SourceSpan[];
+    bottomRight: SourceSpan[];
+  };
 }
+
+/** `Metadata.headerSpans` 的键 = 同名的那个字段。 */
+export type HeaderSpanKey = keyof Metadata["headerSpans"];
 
 export type Accidental = "sharp" | "flat" | "natural" | "double-sharp" | "double-flat";
 
@@ -278,6 +293,11 @@ export function emptyMetadata(): Metadata {
     margins: [],
     options: [],
     remarks: [],
+    headerSpans: {
+      titles: [], authors: [],
+      topLeft: [], topRight: [],
+      bottomLeft: [], bottomCenter: [], bottomRight: [],
+    },
   };
 }
 

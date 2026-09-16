@@ -11,6 +11,7 @@ import {
 } from "./score";
 import { computePhraseBreaks, type FitMetric, type PhraseBreaks } from "./phrase";
 import { chooseLineLayout, pageBreakLines } from "./applybreaks";
+import { WRITE_SHORT_ARTICULATION } from "../jpword/alias";
 
 function escape(s: string): string {
   return s.replace(/\n/g, "\\n");
@@ -290,8 +291,12 @@ class JpScore {
     this._proc = proc; // computeMeta 用其 syllRecords / segLineIndex
   }
 
+  /** 演奏记号。目前只有延音记号（fermata）。默认写简写 `{yy}`——全名 `{YanYin}` 太长，
+   *  手写谱与就地编辑都难敲。要与原版 JP-Word 互通就把 `WRITE_SHORT_ARTICULATION`
+   *  设成 false（它只认全名）；**读取端两种一直都认**。 */
   private makeNotations(ch: Chord): string {
-    return ch.fermata ? "{YanYin}" : "";
+    if (!ch.fermata) return "";
+    return WRITE_SHORT_ARTICULATION ? "{yy}" : "{YanYin}";
   }
 
   /** 倚音：`{` 一串音高 `}`，排在主音之前（文法 `Note` 里 Grace 就在 Pitch 之前）。
